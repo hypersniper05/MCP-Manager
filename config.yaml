@@ -1,0 +1,52 @@
+# MCP-Manager — boot config, and the seed for first run.
+#
+# The boot section is config. Everything below it is SEED: applied only when the database
+# is empty. After that the DB is truth and editing it here does nothing — the portal and
+# the API write to the DB, and a generated key can only be stored as a hash, so the file
+# cannot be the source of truth for it. Delete the DB file to re-seed.
+
+boot:
+  # Localhost only by default — the MCP spec's advice for a local server. Reaching the
+  # manager from another machine (LAN, Tailscale) is a decision: set 0.0.0.0 or one address.
+  # Docker compose sets MCPM_HOST=0.0.0.0 for you, because a port mapping only reaches that bind.
+  host: 127.0.0.1
+  port: 8899
+  db: mcp_manager.db
+  # Embeddings run inside the manager -- no outside service: embeddinggemma-300m (EmbeddingGemma
+  # gen 1), 4-bit ONNX. Its files are fetched from `repo` into `dir` on first start (~220 MB, kept on
+  # the volume in Docker) and run with onnxruntime. Until it has loaded, search matches words.
+  # Measured against gen 2 on this catalogue: better ranking, ~6x faster queries, ~300 MB less RAM.
+  embeddings:
+    dir: models/embeddinggemma-300m
+    repo: onnx-community/embeddinggemma-300m-ONNX
+    file: onnx/model_q4.onnx
+  # admin_token comes from .env (see .env.example). Kept out of this file on purpose: a
+  # committed file is the wrong home for a secret you can rotate. Unset = API fails closed.
+  # HTTPS for your network: both paths = the manager serves TLS itself (uvicorn, same
+  # process, no proxy). Neither = plain HTTP. Half = the start stops and says what is
+  # missing. Self-signed is the norm on a LAN — see the README's "HTTPS" section.
+  # tls_cert: certs/tls-cert.pem
+  # tls_key: certs/tls-key.pem
+
+# No servers here: add yours in the portal, or here before the first start.
+upstreams: []
+  # - name: browser
+  #   url: http://localhost:8940/mcp        # a streamable-HTTP MCP endpoint
+  #   description: Drives a real browser.   # optional: what the model is told it is for
+  #   headers: {Authorization: "Bearer ..."}  # optional: sent with every request to this server
+  #   shared: false                         # optional: true = one session per group, not per app
+
+# Three modes. direct: every tool is in the client's list. hybrid: the defaults are in the list,
+# plus search_tools and call_tool, which reach everything else in one or two calls. adaptive:
+# hybrid, plus the tools each app is learned to use. A group reaches every server unless it sets
+# `servers: [...]`.
+groups:
+  - name: default
+    mode: hybrid
+
+  - name: full
+    mode: direct
+
+# No keys here, on purpose. This file ships in the image, so any key written here is a key
+# everyone who has the repo already knows. Create keys in the portal (or POST /api/v1/keys):
+# the secret is shown once and stored only as a hash.

@@ -1,0 +1,4 @@
+* text=auto eol=lf
+# cmd.exe misreads a batch file with LF endings
+*.bat text eol=crlf
+*.ps1 text eol=crlf

@@ -1,0 +1,26 @@
+# runtime state: the database is the source of truth, not a file to version
+*.db
+*.db-shm
+*.db-wal
+*.log
+data/
+# the embedding model, downloaded on first start when run outside Docker (~220 MB)
+models/
+
+# secrets
+.env
+# certificates: the installers' public root, or a pair of your own, whose key is a secret
+certs/
+# Claude Code MCP config: holds a live key for this machine
+.mcp.json
+.claude/settings.local.json
+# the addresses of the real servers the live tests use
+tests/upstreams.local.yaml
+# reference shots of the portal stay out of the repo
+Screenshot*.png
+
+# python
+__pycache__/
+.venv/
+.pytest_cache/
+

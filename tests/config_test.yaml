@@ -1,0 +1,32 @@
+# Test config — own port, own database, so a test run never fights a live manager.
+# Mirrors config.yaml's shape: boot section + first-run seed. Unlike config.yaml it seeds
+# keys: this file never ships, and the suite needs known credentials. The real servers the live
+# suites talk to come from tests/upstreams.local.yaml (conftest adds them).
+
+boot:
+  host: 127.0.0.1
+  port: 8898
+  db: tests/test.db
+  admin_token: testadmin
+  # No embedding model here, on purpose: the suite must give the same answers without the
+  # ~220 MB download. Ranking is asserted as behaviour, in lexical.
+  embeddings:
+    repo: null
+    file: null
+
+groups:
+  - name: default
+    mode: hybrid
+  - name: full
+    mode: direct
+  - name: imagelibrary
+    mode: hybrid
+    defaults: [server_status, generate_image, list_images]
+
+keys:
+  - key: mgrtest_alpha
+    label: test-alpha
+    group: full
+  - key: mgrtest_beta
+    label: test-beta
+    group: imagelibrary

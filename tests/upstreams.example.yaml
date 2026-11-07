@@ -1,0 +1,7 @@
+# The live suites (test_api, test_coaching, test_gateway, test_search, one test in test_outage) need
+# real MCP servers and skip without them. They assert these servers' tools by name, so other servers
+# will not pass them.
+# Copy this to tests/upstreams.local.yaml (gitignored) and put in the addresses.
+imagegen: http://localhost:5005/mcp   # an image generator: generate_image, list_images, server_status
+browser: http://localhost:8940/mcp    # a browser: navigate, screenshot, read_text, list_tabs
+ytdl: http://localhost:6080/mcp       # a YouTube downloader: download_audio, transcribe_video

@@ -1,0 +1,35 @@
+# One service, nothing else needed. The embedding model runs inside this container: it is
+# fetched from Hugging Face into the `data` volume on first start and stays there, so rebuilds
+# are cheap and the container is self-contained.
+#
+#   install.bat or ./install.sh does all of this; by hand:
+#   cp .env.example .env        # set MCPM_ADMIN_TOKEN
+#   docker compose up --build
+#
+# Portal: http://localhost:8899/    MCP endpoint: http://localhost:8899/mcp
+
+services:
+  mcp-manager:
+    build: .
+    ports:
+      # Who can reach it: this computer only, unless you say otherwise. MCPM_PUBLISH=0.0.0.0 in
+      # .env opens it to your whole network; MCPM_PORT moves it off 8899.
+      - "${MCPM_PUBLISH:-127.0.0.1}:${MCPM_PORT:-8899}:8899"
+    environment:
+      MCPM_ADMIN_TOKEN: ${MCPM_ADMIN_TOKEN:?set MCPM_ADMIN_TOKEN in .env}
+      # Inside a container only a 0.0.0.0 bind is reachable through the port mapping;
+      # a bare install of the same image would listen on localhost only.
+      MCPM_HOST: ${MCPM_HOST:-0.0.0.0}
+      # only for downloading the model, and only if your network needs it: the repo is not gated
+      HF_TOKEN: ${HF_TOKEN:-}
+      # HTTPS: paths INSIDE the container. The installers make a certificate in the data volume
+      # (/data/tls/...); one of your own goes in ./certs (/certs/...). Blank (the default) = plain HTTP.
+      MCPM_TLS_CERT: ${MCPM_TLS_CERT:-}
+      MCPM_TLS_KEY: ${MCPM_TLS_KEY:-}
+    volumes:
+      - data:/data          # the SQLite database and the model file
+      - ./certs:/certs:ro   # HTTPS with a certificate of your own: MCPM_TLS_CERT=/certs/...
+    restart: unless-stopped
+
+volumes:
+  data:

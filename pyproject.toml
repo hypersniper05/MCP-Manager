@@ -1,0 +1,10 @@
+[project]
+name = "mcp-manager"
+version = "0.0.1"
+description = "One MCP server in front of many."
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

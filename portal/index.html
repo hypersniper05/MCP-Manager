@@ -1,0 +1,1744 @@
+<!doctype html>
+<!--
+  MCP-Manager admin panel. A pure client of the management API (see the README) — no private
+  endpoints, no build step, no framework. If this page ever needed something the API didn't
+  have, the API would be incomplete; anything this page does, your own settings page can do.
+
+  Layout (the soft-dashboard look): an icon rail switches views, the top bar carries the brand
+  and the real tool search (the same engine the model runs). The Overview is the landing view:
+  one dark card with the MCP endpoint (to copy) and the servers' health beside the call volume
+  over time, then the most-used tools as a transaction list and the diagnostics. Servers, Keys,
+  Groups and Tools are the management views; Search is what the top bar drives.
+
+  This is the admin surface. MCP clients never reach it: every /api call needs the admin
+  token, which is a different secret from the keys apps connect with. The token lives in
+  localStorage (Settings, the gear), so a reload or a new tab does not ask for it again; a
+  401 clears it, so a stale or replaced token never sticks around.
+
+  Everything interpolated into an onclick goes through js(): a tool name comes from an
+  upstream server, and HTML-escaping alone does not stop a quote from ending a JS string
+  inside an attribute -- which would hand a hostile server the admin token.
+-->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MCP-Manager</title>
+<link rel="icon" id="favicon" type="image/svg+xml">
+<script>
+  try { const t = localStorage.getItem('theme');
+        if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch {}
+</script>
+<style>
+  :root {
+    color-scheme: light;
+    --chev: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 4.5 6 8l3.5-3.5' fill='none' stroke='%234b4f5c' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    --page: #dfe2ec; --shell: #f2f3f8; --surface: #ffffff; --surface-2: #f4f5f9;
+    --ink: #161923; --ink-2: #4b4f5c; --muted: #9aa0b0;
+    --grid: #edeff5; --border: rgba(22,25,35,.08);
+    --accent: #161923; --accent-ink: #fff;
+    --good: #0ca678; --warn: #c98a00; --crit: #d9363e;
+    /* the endpoint card: a soft tint of the logo's indigo in light, a raised slate in dark */
+    --hero: #e3e6f6; --hero-ink: #161923; --hero-dim: #5c6278; --hero-bad: #c62f37;
+    --hero-tint: rgba(22,25,35,.045); --hero-btn: rgba(22,25,35,.08); --hero-btn-hover: rgba(22,25,35,.14);
+    --hero-line: rgba(22,25,35,.12);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --chev: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 4.5 6 8l3.5-3.5' fill='none' stroke='%23b6bbc9' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+      --page: #0b0d11; --shell: #12151c; --surface: #181c25; --surface-2: #1f242f;
+      --ink: #f2f3f7; --ink-2: #b6bbc9; --muted: #6d7383;
+      --grid: #232834; --border: rgba(255,255,255,.07);
+      --accent: #f2f3f7; --accent-ink: #14161d;
+      --hero: #262b37; --hero-ink: #f2f3f7; --hero-dim: #9aa1b2; --hero-bad: color-mix(in srgb, #d9363e 65%, #fff);
+      --hero-tint: rgba(255,255,255,.06); --hero-btn: rgba(255,255,255,.12); --hero-btn-hover: rgba(255,255,255,.2);
+      --hero-line: rgba(255,255,255,.16);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --chev: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 4.5 6 8l3.5-3.5' fill='none' stroke='%23b6bbc9' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    --page: #0b0d11; --shell: #12151c; --surface: #181c25; --surface-2: #1f242f;
+    --ink: #f2f3f7; --ink-2: #b6bbc9; --muted: #6d7383;
+    --grid: #232834; --border: rgba(255,255,255,.07);
+    --accent: #f2f3f7; --accent-ink: #14161d;
+    --hero: #262b37; --hero-ink: #f2f3f7; --hero-dim: #9aa1b2; --hero-bad: color-mix(in srgb, #d9363e 65%, #fff);
+    --hero-tint: rgba(255,255,255,.06); --hero-btn: rgba(255,255,255,.12); --hero-btn-hover: rgba(255,255,255,.2);
+    --hero-line: rgba(255,255,255,.16);
+  }
+
+  * { box-sizing: border-box }
+  body { margin: 0; background: var(--page); color: var(--ink);
+         font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif }
+  input, select, button, textarea { font: inherit; color: inherit }
+  code { font: .82em ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ink-2); overflow-wrap: anywhere }
+  .ic { width: 20px; height: 20px; flex: none }
+  option { background: var(--surface); color: var(--ink) }
+  input[type="checkbox"] { accent-color: var(--accent) }
+  /* a switch for settings that take effect at once (a server on, shared per group): a pill in the
+     page's accent, the real checkbox kept underneath for the keyboard and screen readers */
+  .switch { display: inline-flex; align-items: center; gap: .5rem; cursor: pointer; font-size: .82rem;
+            color: var(--ink-2); position: relative; user-select: none }
+  .switch input { position: absolute; opacity: 0; width: 1px; height: 1px; margin: 0 }
+  .switch .track { position: relative; flex: none; width: 34px; height: 20px; border-radius: 99px;
+                   background: color-mix(in srgb, var(--ink) 16%, var(--surface-2)); transition: background .15s }
+  .switch .track::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px;
+                          border-radius: 99px; background: var(--surface); transition: transform .15s }
+  .switch input:checked + .track { background: var(--accent) }
+  .switch input:checked + .track::after { transform: translateX(14px); background: var(--accent-ink) }
+  .switch input:focus-visible + .track { outline: 2px solid color-mix(in srgb, var(--ink) 35%, transparent);
+                                         outline-offset: 2px }
+  .switch:hover { color: var(--ink) }
+  .switches { display: flex; gap: 1.1rem; flex-wrap: wrap; margin-top: .8rem }
+  /* the server card: a column whose last row (switches, actions) sits on the card's floor */
+  .card.srv { display: flex; flex-direction: column; gap: .6rem }
+  .srv-top { display: flex; justify-content: space-between; align-items: flex-start; gap: .8rem }
+  .srv-id { display: grid; gap: .3rem; min-width: 0 }
+  .srv-id b { font-size: 1rem }
+  .srv-id code { overflow-wrap: anywhere }
+  .srv-state { display: flex; flex-direction: column; align-items: flex-end; gap: .35rem; flex: none }
+  .card.srv .hdrs { margin-top: 0 }
+  .card.srv .err-line { margin-top: 0 }
+  .srv-foot { margin-top: auto; padding-top: .35rem; display: flex; align-items: center; gap: .6rem 1rem; flex-wrap: wrap }
+  .srv-foot .switches { margin-top: 0 }
+  .srv-foot .actions { margin-left: auto }      /* right, even when the row wraps on a phone */
+  /* the browser's own ring (orange in Chromium) is the one off-palette color on the page */
+  :focus-visible { outline: 2px solid color-mix(in srgb, var(--ink) 35%, transparent); outline-offset: 1px }
+  input:focus, select:focus, textarea:focus { outline: 2px solid color-mix(in srgb, var(--ink) 22%, transparent);
+                                              outline-offset: 0 }
+
+  /* ---- the shell: one big rounded panel on the page, like a device frame ---- */
+  .page { padding: clamp(.5rem, 2vw, 1.5rem) }
+  .shell { max-width: 1400px; margin: 0 auto; background: var(--shell); border-radius: 28px; padding: clamp(.6rem, 1.6vw, 1.4rem); min-height: calc(100vh - 3rem) }
+
+  /* ---- top bar: brand, the real search, status ---- */
+  .top { display: flex; align-items: center; gap: .8rem; padding: .3rem .4rem .9rem }
+  .brand { font-size: 1.35rem; font-weight: 800; letter-spacing: -.03em; white-space: nowrap;
+           display: flex; align-items: center; gap: .5rem }
+  .brand .logo { width: 32px; height: 32px; flex: none }
+  .search { flex: 1; max-width: 420px; display: flex; align-items: center; gap: .5rem;
+            background: var(--surface); border-radius: 999px; padding: .45rem .9rem }
+  .search .ic { width: 17px; height: 17px; color: var(--muted) }
+  .search input { flex: 1; min-width: 0; border: 0; background: none; outline: none }
+  .search input::placeholder { color: var(--muted) }
+  /* the helper under an empty search box: it is semantic, so it takes a sentence, not a name */
+  .search { position: relative }
+  .suggest { position: absolute; left: 0; right: 0; top: calc(100% + .4rem); z-index: 15; background: var(--surface);
+             border-radius: 18px; padding: .7rem; display: grid; gap: .15rem;
+             outline: 1px solid var(--grid) }   /* a floating layer needs an edge; cards stay flat */
+  .suggest[hidden] { display: none }
+  .suggest .hint { padding: .1rem .5rem .35rem }
+  .suggest button { text-align: left; border: 0; background: none; border-radius: 10px; padding: .35rem .5rem;
+                    cursor: pointer; color: var(--ink); display: flex; gap: .5rem; align-items: center }
+  .suggest button:hover, .suggest button:focus-visible { background: var(--surface-2) }
+  .suggest button .ic { width: 15px; height: 15px; color: var(--muted) }
+  .top .spacer { flex: 1 }
+  .iconbtn { position: relative; display: grid; place-items: center; width: 40px; height: 40px; border: 0;
+             border-radius: 14px; background: var(--surface); color: var(--ink-2); cursor: pointer }
+  .iconbtn:hover { color: var(--ink) }
+  .iconbtn .dot { position: absolute; top: 9px; right: 9px; width: 8px; height: 8px; border-radius: 99px;
+                  background: var(--crit); border: 2px solid var(--surface) }
+
+  /* ---- body: icon rail + views ---- */
+  .body { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: .9rem }
+  .rail { display: flex; flex-direction: column; gap: .45rem; position: sticky; top: 1rem; align-self: start }
+  .rail button { position: relative; display: grid; place-items: center; width: 46px; height: 46px; border: 0;
+                 border-radius: 16px; background: transparent; color: var(--muted); cursor: pointer }
+  .rail button:hover { color: var(--ink); background: var(--surface) }
+  .rail button.on { background: var(--accent); color: var(--accent-ink) }
+  .rail button .dot { position: absolute; top: 8px; right: 8px; width: 8px; height: 8px; border-radius: 99px;
+                      background: var(--crit); border: 2px solid var(--shell) }
+  .rail button.on .dot { border-color: var(--accent) }
+  .views { min-width: 0 }
+  [data-view] { display: none } [data-view].on { display: block }
+
+  /* ---- shared pieces ---- */
+  h2 { font-size: 1.02rem; font-weight: 750; letter-spacing: -.01em; margin: 0 }
+  .phead { display: flex; align-items: center; gap: .6rem; margin-bottom: .8rem }
+  .phead .grow { flex: 1 }
+  .panel { background: var(--surface); border-radius: 22px; padding: 1.1rem 1.2rem;
+           min-width: 0 }
+  .stamp { font-size: .72rem; color: var(--muted); white-space: nowrap }
+  .notice { margin: 0 0 .8rem }
+  .notice > div { border-radius: 16px; padding: .6rem .9rem; font-size: .88rem; display: flex; gap: .6rem;
+                  align-items: center; background: var(--surface) }
+  .notice .err { color: var(--crit) }
+  .notice button { margin-left: auto }
+  .toolbar { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; margin-bottom: .9rem }
+  .grow { flex: 1; min-width: 10ch }
+  main input, main select, main textarea, dialog input, dialog textarea, dialog select {
+    background-color: var(--surface-2); border: 0; border-radius: 12px; padding: .4rem .65rem; min-width: 0 }
+  .toolbar input, .toolbar select { background-color: var(--surface) }   /* on the shell, not a card */
+  /* dropdowns: the browser's own arrow and grey box replaced by the page's field and a chevron */
+  select { appearance: none; -webkit-appearance: none; cursor: pointer; font-size: .85rem;
+           padding: .42rem 2rem .42rem .75rem !important; background-image: var(--chev);
+           background-repeat: no-repeat; background-position: right .7rem center; background-size: 12px 12px }
+  select:hover { background-color: color-mix(in srgb, var(--ink) 6%, var(--surface-2)) }
+  .toolbar select:hover { background-color: color-mix(in srgb, var(--ink) 4%, var(--surface)) }
+  textarea { width: 100%; min-height: 6.5rem; resize: vertical; line-height: 1.45 }
+  main button, dialog button { background: var(--surface-2); border: 1px solid transparent; border-radius: 12px;
+           padding: .38rem .8rem; cursor: pointer; white-space: nowrap; color: var(--ink) }
+  main button:hover, dialog button:hover { background: color-mix(in srgb, var(--ink) 7%, var(--surface-2)) }
+  main button:disabled, dialog button:disabled { opacity: .45; cursor: default }
+  .tname { white-space: nowrap }   /* a tool name broken mid-word ("wait_for_chan / ge") reads as two */
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent }
+  button.primary:hover { background: var(--accent); opacity: .88 }
+  button.danger:hover { color: var(--crit); background: color-mix(in srgb, var(--crit) 8%, var(--surface-2)) }
+  label { display: flex; gap: .35rem; align-items: center; color: var(--ink-2); font-size: .85rem }
+  .badge { font-size: .72rem; padding: .12rem .55rem; border-radius: 99px; background: var(--surface-2);
+           color: var(--ink-2); white-space: nowrap }
+  .hint { color: var(--muted); font-size: .78rem; overflow-wrap: anywhere }
+  .empty { color: var(--muted); font-size: .85rem; padding: .5rem 0 }
+  .grid { display: grid; gap: .9rem; grid-template-columns: repeat(auto-fill, minmax(min(360px, 100%), 1fr)) }
+  .card { border-radius: 22px; padding: 1rem 1.1rem; background: var(--surface); min-width: 0 }
+  .row { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap }
+  .between { justify-content: space-between }
+  .actions { display: flex; gap: .4rem; white-space: nowrap; align-items: center }
+
+  /* a status in words and an icon, tinted by its own colour: Online / Connecting / Offline / Disabled */
+  .st { display: inline-flex; align-items: center; gap: .35rem; font-size: .76rem; font-weight: 650;
+        padding: .18rem .6rem .18rem .5rem; border-radius: 99px; white-space: nowrap;
+        background: color-mix(in srgb, currentColor 12%, transparent) }
+  .st .ic { width: 14px; height: 14px }
+  .st.good { color: var(--good) }
+  .st.warn { color: var(--warn) }
+  .st.crit { color: var(--crit) }
+  .st.off  { color: var(--muted) }
+  .hdrs { display: flex; gap: .35rem; flex-wrap: wrap; margin-top: .55rem }
+  .hdr { display: inline-flex; align-items: center; gap: .3rem; font-size: .76rem; color: var(--ink-2);
+         padding: .16rem .6rem .16rem .5rem; border-radius: 99px; background: var(--surface-2) }
+  .hdr .ic { width: 14px; height: 14px; color: var(--ink) }
+
+  table { width: 100%; border-collapse: collapse; font-size: .87rem }
+  th { text-align: left; font-size: .68rem; text-transform: uppercase; letter-spacing: .07em; color: var(--muted);
+       font-weight: 600; padding: .4rem .45rem }
+  td { padding: .5rem .45rem; border-top: 1px solid var(--grid); vertical-align: top }
+  td.desc { color: var(--ink-2) } td b { font-weight: 600; color: var(--ink) }
+  td.num { text-align: right; font-variant-numeric: tabular-nums }
+  tr.revoked td { opacity: .55 }
+  /* text beside a select and buttons: one line, not three heights; on a narrow screen the table
+     scrolls sideways instead of breaking "••••c1b8 30a" and dates over three lines */
+  #keys td { vertical-align: middle; white-space: nowrap }
+  .scroll { overflow: auto }
+  .scroll.tall { max-height: 60vh }
+  .scroll.tall thead th { position: sticky; top: 0; z-index: 1; background: var(--surface) }
+  .args { display: block; margin-top: .2rem }
+  .pen { border: 0; background: none; padding: 0 .3rem; color: var(--muted); font-size: .8rem; line-height: 1 }
+  .pen:hover { color: var(--ink) }
+  .err-line { color: var(--crit); font-size: .78rem; margin-top: .2rem; overflow-wrap: anywhere }
+
+  .seg { display: inline-flex; background: var(--surface-2); border-radius: 999px; padding: .18rem; gap: .1rem }
+  .seg button { border: 0; border-radius: 999px; background: transparent; padding: .25rem .8rem; font-size: .82rem }
+  .seg button.on { background: var(--accent); color: var(--accent-ink) }
+  .chips { display: flex; flex-wrap: wrap; gap: .3rem; margin-top: .6rem }
+  .chip { display: inline-flex; align-items: center; gap: .15rem; font: .78rem ui-monospace, monospace;
+          background: var(--surface-2); border-radius: 99px; padding: .08rem .25rem .08rem .6rem }
+  .chip.warn { background: color-mix(in srgb, var(--warn) 16%, var(--surface-2)); color: var(--warn) }
+  .chip button { border: 0; background: transparent; padding: 0 .3rem; line-height: 1; color: var(--muted) }
+  details { margin-top: .6rem } details summary { cursor: pointer; color: var(--ink-2); font-size: .82rem }
+  .picker { margin-top: .5rem; max-height: 300px; overflow: auto; border-top: 1px solid var(--grid); padding-top: .4rem }
+  .picker .server { font-size: .7rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: .5rem 0 .15rem }
+  .pins { display: grid; gap: .1rem .75rem; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)) }
+  .pins label { color: inherit; font-size: .8rem; overflow-wrap: anywhere }
+
+  /* ---- overview: two columns. Row one is where apps connect and whether what is behind it
+     answers (one dark card), beside the call volume; row two is activity and diagnostics. ---- */
+  .ov { display: grid; gap: 1rem; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start }
+  .ov > .endpoint, .ov > #calls { align-self: stretch }   /* row one reads as one band */
+  .ov > .panel { container-type: inline-size }            /* see the @container after .arow */
+  .endpoint { background: var(--hero); color: var(--hero-ink); border-radius: 22px; padding: 1.2rem 1.3rem;
+              display: flex; flex-direction: column; gap: .5rem; min-width: 0 }
+  .endpoint .lbl { font-size: .72rem; text-transform: uppercase; letter-spacing: .08em; color: var(--hero-dim) }
+  .endpoint .url { font: 600 1.02rem/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+                   overflow-wrap: anywhere; letter-spacing: -.01em }
+  .endpoint .dim { font-size: .76rem; color: var(--hero-dim) }
+  .endpoint .dim.bad { color: var(--hero-bad) }   /* on the dark card, the page's red is too dark */
+  .endpoint button { margin-left: auto; background: var(--hero-btn); color: var(--hero-ink);
+                     border: 0; border-radius: 999px; padding: .3rem .9rem; font-size: .82rem }
+  .endpoint button:hover { background: var(--hero-btn-hover) }
+  .endpoint .servers { margin-top: auto; display: flex; gap: 1rem; align-items: center; border-radius: 16px;
+                       background: var(--hero-tint); padding: .85rem 1rem }
+  .endpoint .servers .grow { flex: 1; min-width: 0 }
+  .endpoint .val { font-size: 1.15rem; font-weight: 750 }
+
+  .arow { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 8.5rem) auto 30px;
+          gap: .8rem; align-items: center; padding: .55rem .4rem .55rem .6rem; border-radius: 14px }
+  .arow:hover { background: var(--surface-2) }
+  .anm { min-width: 0 }
+  .anm b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+  .anm small { color: var(--muted) }
+  .atime { color: var(--muted); font-size: .8rem; white-space: nowrap }
+  .aval { text-align: right; font-weight: 650; font-variant-numeric: tabular-nums; white-space: nowrap }
+  .dotsbtn { border: 0; background: none; color: var(--muted); padding: .3rem;
+             display: grid; place-items: center }
+  .dotsbtn:hover { color: var(--ink) }
+  /* half a screen is narrow: the activity list drops its time column by the panel's own width,
+     not the window's, before tool names shrink to "download_a…". After .arow, so it wins. */
+  @container (max-width: 480px) { .arow { grid-template-columns: minmax(0, 1fr) auto 30px } .atime { display: none } }
+
+  .checks { display: grid; gap: .2rem }
+  .check { display: grid; grid-template-columns: 36px minmax(0, 1fr); gap: .75rem; align-items: center;
+           padding: .45rem .4rem; border-radius: 14px; font-size: .84rem }
+  .check:hover { background: var(--surface-2) }
+  .cico { width: 36px; height: 36px; border-radius: 12px; display: grid; place-items: center; flex: none;
+          color: var(--tone, var(--muted)); background: color-mix(in srgb, var(--tone, var(--muted)) 14%, transparent) }
+  .cico .ic { width: 18px; height: 18px }
+  .good { --tone: var(--good) } .warn { --tone: var(--warn) } .crit { --tone: var(--crit) } .off { --tone: var(--muted) }
+  .check b { display: block; font-weight: 600 }
+  .check .sub { color: var(--ink-2); font-size: .78rem; overflow-wrap: anywhere; margin-top: .05rem }
+
+  .bignum { font-size: 2rem; font-weight: 800; letter-spacing: -.03em; line-height: 1.1 }
+  .periodrow { display: flex; gap: .6rem; align-items: center; margin: .8rem 0 .4rem }
+  #chart svg { width: 100%; height: auto; display: block }
+  .xlabels { display: flex; justify-content: space-between; font-size: .72rem; color: var(--muted);
+             padding: 0 .2rem }
+  .xlabels b { background: var(--accent); color: var(--accent-ink); border-radius: 99px; padding: .05rem .5rem;
+               font-weight: 600 }
+
+  /* ---- stats: KPI cards, two-column panels, the weekday x hour grid ---- */
+  /* six across, or three, or two: auto-fit left one card alone on a row of its own */
+  .kpis { display: grid; gap: 1rem; grid-template-columns: repeat(6, minmax(0, 1fr)); margin-bottom: 1rem }
+  @media (max-width: 1250px) { .kpis { grid-template-columns: repeat(3, minmax(0, 1fr)) } }
+  @media (max-width: 600px) { .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)) } }
+  .kpi { background: var(--surface); border-radius: 22px; padding: .9rem 1.1rem; min-width: 0 }
+  .kpi .lbl { font-size: .72rem; color: var(--muted) }
+  .kpi .val { font-size: 1.5rem; font-weight: 800; letter-spacing: -.02em; line-height: 1.25 }
+  .kpi .sub { font-size: .76rem; color: var(--ink-2) }
+  .kpi .sub.bad { color: var(--crit) }
+  .twocol { display: grid; gap: 1rem; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-bottom: 1rem }
+  .twocol + .panel, .panel + .panel { margin-top: 1rem }
+  #st-days svg { width: 100%; height: auto; display: block }
+  .legend { display: flex; gap: .8rem; font-size: .74rem; color: var(--ink-2) }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: .3rem; vertical-align: -1px }
+  .heat { display: grid; grid-template-columns: 2.4rem repeat(24, minmax(0, 1fr)); gap: 2px; font-size: .68rem; color: var(--muted) }
+  .heat .c { aspect-ratio: 1; border-radius: 3px; background: var(--surface-2) }
+  .heat .h { text-align: left; grid-column: span 6 }
+  .bar { height: 6px; border-radius: 3px; background: var(--ink); opacity: .8; margin-top: .25rem; min-width: 2px }
+  .chain { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto; gap: .5rem;
+           align-items: center; padding: .4rem 0; border-top: 1px solid var(--grid); font-size: .84rem }
+  .chain:first-child { border-top: 0 }
+  .chain small { display: block; color: var(--muted); font-size: .72rem }
+  .chain .n { font-weight: 650; font-variant-numeric: tabular-nums }
+  .chip.ro { padding: .08rem .6rem }
+  .chip.on { background: var(--accent); color: var(--accent-ink) }
+  .chip.dim { opacity: .55 }
+  #st-apps td, #st-servers td, #st-tools td { vertical-align: middle }
+
+  /* ---- locked: no admin token yet, so nothing but the way in ---- */
+  .lockwall { display: none; max-width: 30rem; margin: 12vh auto 0; text-align: center; background: var(--surface);
+              border-radius: 22px; padding: 2rem 1.6rem }
+  .lockwall .ic { width: 34px; height: 34px; color: var(--ink-2) }
+  .lockwall h2 { margin: .7rem 0 .4rem; font-size: 1.15rem }
+  .lockwall p { color: var(--ink-2); font-size: .88rem; margin: 0 0 1.2rem }
+  .lockwall .err-line { margin: -.6rem 0 1rem }
+  body.locked .lockwall { display: block }
+  body.locked .rail, body.locked .search, body.locked .needs-key, body.locked .views > section,
+  body.locked .notice { display: none }
+  body.locked .body { grid-template-columns: 1fr }
+
+  #tip { position: fixed; pointer-events: none; z-index: 20; background: var(--ink); color: var(--surface);
+         font-size: .8rem; padding: .35rem .55rem; border-radius: 8px; display: none; max-width: 22rem }
+
+  dialog { border: 0; border-radius: 22px; padding: 1.3rem; width: min(560px, 92vw); background: var(--surface);
+           color: var(--ink) }
+  .check .when { color: var(--muted); font-size: .74rem; white-space: nowrap; align-self: start; padding-top: .15rem }
+  .check.with-time { grid-template-columns: 36px minmax(0, 1fr) auto }
+  .audit-sub { color: var(--muted); font-size: .72rem; text-transform: uppercase; letter-spacing: .07em;
+               margin: .8rem .4rem .3rem }
+  .audit-sub:first-child { margin-top: 0 }
+  .pagehead { margin: .15rem .2rem 1rem }
+  .pagehead h1 { margin: 0; font-size: 1.45rem; font-weight: 800; letter-spacing: -.02em; line-height: 1.2 }
+  .pagehead p { margin: .25rem 0 0; color: var(--ink-2); font-size: .88rem; max-width: 70ch }
+  /* a small icon button inside a card (reconnect); it turns while the server is being reached */
+  .cardicon { display: inline-grid; place-items: center; width: 34px; height: 32px; padding: 0 !important }
+  .cardicon .ic { width: 17px; height: 17px }
+  .cardicon.mini { width: 26px; height: 24px; background: transparent; color: var(--muted) }
+  .cardicon.mini .ic { width: 14px; height: 14px }
+  .keyname { display: inline-flex; align-items: center; gap: .25rem }
+  .capline { display: flex; align-items: center; gap: .6rem; margin-top: .7rem; font-size: .84rem; color: var(--ink-2) }
+  .grp-servers { margin-top: .7rem; font-size: .84rem; color: var(--ink-2) }
+  .sumhint { display: block; margin: .15rem 0 0 .95rem; color: var(--muted); font-size: .76rem; line-height: 1.4 }
+  .autoline { display: inline-flex; align-items: center; gap: .45rem; cursor: pointer }
+  .grp-servers .pins { margin-top: .5rem }
+  .grp-servers .pins label { display: flex; align-items: center; gap: .4rem; cursor: pointer }
+  .grp-servers .pins .n { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums }
+  .fulltext { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .9rem; line-height: 1.5;
+              background: var(--surface-2); border-radius: 12px; padding: .7rem .8rem }
+  /* one scrollbar for all of it, and Close stays in view however long the text is */
+  .infobody { max-height: calc(100vh - 11rem); overflow: auto; margin-bottom: .8rem }
+  .infobody .field:last-child { margin-bottom: 0 }
+  .revertline { display: flex; align-items: center; justify-content: space-between; gap: .8rem; margin: -.25rem 0 .8rem }
+  .revertline .hint { margin: 0 }
+  .revertline button { flex: none }
+  .cardicon.spin .ic { animation: spin .9s linear infinite }
+  .cardicon:disabled { pointer-events: auto }        /* so a turned-off server's button still explains itself */
+  @keyframes spin { to { transform: rotate(360deg) } }
+  .ask { width: min(440px, 92vw) }
+  .ask .ask-head { display: flex; align-items: center; gap: .75rem; margin-bottom: .5rem }
+  .ask h3 { margin: 0 }
+  .ask p { margin: 0 0 1.2rem; color: var(--ink-2); font-size: .9rem; line-height: 1.5; white-space: pre-line }
+  button.dangerbtn { background: var(--crit); color: #fff }
+  button.dangerbtn:hover { background: var(--crit); opacity: .88 }
+  dialog::backdrop { background: rgb(10 12 20 / .45); backdrop-filter: blur(3px) }
+  dialog h3 { margin: 0 0 .8rem; font-size: 1.02rem; font-weight: 750 }
+  dialog .field { display: block; margin-bottom: .7rem }
+  dialog .field > span { display: block; font-size: .7rem; text-transform: uppercase; letter-spacing: .07em;
+                         color: var(--muted); margin-bottom: .25rem }
+  dialog .field > input, dialog .field > select { width: 100% }
+
+  @media (max-width: 860px) { .ov, .twocol { grid-template-columns: 1fr } }
+  /* a phone has no room for the time column; the tooltip and "Recently used" still carry it */
+  @media (max-width: 600px) {
+    .arow { grid-template-columns: minmax(0, 1fr) auto 30px } .atime { display: none }
+    .toolbar .grow { flex-basis: 100% }          /* a label field squeezed to "label, e.g. the" */
+    .phead { flex-wrap: wrap } .phead h2 { white-space: nowrap }
+    /* brand + four buttons on one row: at full size the last one wrapped onto a row alone */
+    .top { gap: .35rem } .brand { font-size: 1.05rem; gap: .35rem } .brand .logo { width: 24px; height: 24px } .iconbtn { width: 34px; height: 34px; border-radius: 12px }
+  }
+  @media (max-width: 900px) {
+    .body { grid-template-columns: 1fr }
+    .rail { flex-direction: row; position: static; order: -1; justify-content: center }
+    .top { flex-wrap: wrap } .search { order: 3; flex-basis: 100%; max-width: none }
+  }
+</style>
+
+<div class="page"><div class="shell">
+
+  <header class="top">
+    <div class="brand">MCP-Manager</div>
+    <div class="spacer"></div>
+    <div class="search">
+      <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+           stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input id="gsearch" placeholder="Search tools — try “browse the web”" autocomplete="off"
+             aria-describedby="suggest-hint">
+      <div class="suggest" id="suggest" hidden>
+        <div class="hint" id="suggest-hint">Semantic search: describe the step in your own words — it finds
+          tools by meaning, not by name.</div>
+      </div>
+    </div>
+    
+    <button class="iconbtn needs-key" id="bell" data-tip="Server status" aria-label="Server status" onclick="showView('servers')">
+      <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+           stroke-linecap="round" stroke-linejoin="round"><path d="M6 9a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6"/><path d="M10 20a2 2 0 0 0 4 0"/></svg>
+      <i class="dot" id="bell-dot" hidden></i>
+    </button>
+    <button class="iconbtn needs-key" data-tip="Refresh" aria-label="Refresh" onclick="render()">
+      <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+           stroke-linecap="round" stroke-linejoin="round"><path d="M20 11A8 8 0 0 0 5.6 6.4L4 8m0-4v4h4"/><path d="M4 13a8 8 0 0 0 14.4 4.6L20 16m0 4v-4h-4"/></svg>
+    </button>
+    <button class="iconbtn" id="theme" type="button"></button>
+    <button class="iconbtn" data-tip="Connection settings" aria-label="Connection settings" onclick="settings()">
+      <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+           stroke-linecap="round"><path d="M4 8h9M19 8h1M4 16h3M13 16h7"/><circle cx="16" cy="8" r="2.2"/><circle cx="10" cy="16" r="2.2"/></svg>
+    </button>
+  </header>
+
+  <div class="body">
+    <nav class="rail" id="rail" aria-label="views">
+      <button data-view="overview" class="on" data-tip="Overview" aria-label="Overview">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+             stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5V21h-6v-7H9v7H3z"/></svg>
+      </button>
+      <button data-view="stats" data-tip="Stats" aria-label="Stats">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+             stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>
+      </button>
+      <button data-view="servers" data-tip="Servers" aria-label="Servers">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+             stroke-linecap="round"><rect x="3" y="4" width="18" height="7" rx="2.5"/><rect x="3" y="13" width="18" height="7" rx="2.5"/><path d="M7 7.5h.01M7 16.5h.01"/></svg>
+        <i class="dot" id="rail-dot" hidden></i>
+      </button>
+      <button data-view="keys" data-tip="Keys" aria-label="Keys">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+             stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="4"/><path d="M10.3 12.7 20 3m-4 0h4v4"/></svg>
+      </button>
+      <button data-view="groups" data-tip="Groups" aria-label="Groups">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+             stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.4 3.4-5 6.5-5s5.7 1.6 6.5 5"/><circle cx="17" cy="9" r="2.5"/><path d="M16.5 14.6c2.6.3 4.4 1.8 5 4.4"/></svg>
+      </button>
+      <button data-view="tools" data-tip="Tools" aria-label="Tools">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+             stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a4.5 4.5 0 0 0-6 5.6L3 17.6V21h3.4l5.7-5.7a4.5 4.5 0 0 0 5.6-6L14.5 12l-2.5-2.5z"/></svg>
+      </button>
+    </nav>
+
+    <main class="views">
+      <div class="lockwall" id="lockwall">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+             stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10.5" width="16" height="10" rx="2.5"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/></svg>
+        <h2>An admin key is needed</h2>
+        <p>This page manages the manager itself, so it opens only with the admin token —
+          <code>MCPM_ADMIN_TOKEN</code> from the manager's <code>.env</code>. App keys are not accepted here.</p>
+        <div class="err-line" id="lockerr" hidden></div>
+        <button class="primary" type="button" onclick="settings()">Add admin key</button>
+      </div>
+      <div class="notice" id="notice" hidden></div>
+
+      <section data-view="overview" class="on">
+        <div class="pagehead"><h1>Overview</h1><p>Where your apps connect, and how the servers behind it are doing.</p></div>
+        <div class="ov">
+          <div class="endpoint" id="endpoint"></div>
+          <div class="panel" id="calls">
+            <div class="phead"><h2>Tool calls</h2><span class="grow"></span>
+              <span class="stamp" id="stamp"></span></div>
+            <div class="bignum" id="calls-total">—</div>
+            <div class="stamp" id="calls-sub"></div>
+            <div class="periodrow">
+              <div class="seg" id="period">
+                <button data-days="7">7d</button><button data-days="30" class="on">30d</button>
+                <button data-days="90">90d</button>
+              </div>
+            </div>
+            <div id="chart"></div>
+            <div class="xlabels" id="xlabels"></div>
+          </div>
+          <div class="panel">
+            <div class="phead"><h2>Recent activity</h2><span class="grow"></span>
+              <select id="sortby" onchange="drawUsage()" data-tip="sort">
+                <option value="calls">Most used</option><option value="recent">Recently used</option>
+              </select>
+            </div>
+            <div id="usage"></div>
+            <div class="row" style="justify-content:center;margin-top:.6rem" id="usage-more"></div>
+          </div>
+          <div class="panel">
+            <div class="phead"><h2>Diagnostics</h2></div>
+            <div class="checks" id="checks"></div>
+          </div>
+        </div>
+      </section>
+
+      <section data-view="stats">
+        <div class="pagehead"><h1>Stats</h1><p>Tool calls over time, per server, tool and app — and an audit of what the manager changed by itself.</p></div>
+        <div class="toolbar">
+          <div class="seg" id="st-period">
+            <button data-days="7">7d</button><button data-days="30" class="on">30d</button>
+            <button data-days="90">90d</button>
+          </div>
+          <span class="grow"></span><span class="stamp" id="st-stamp"></span>
+        </div>
+        <div class="kpis" id="st-kpis"></div>
+        <div class="twocol">
+          <div class="panel">
+            <div class="phead"><h2>Calls per day</h2><span class="grow"></span>
+              <span class="legend"><span><i style="background:var(--ink)"></i>succeeded</span>
+                <span><i style="background:var(--crit)"></i>failed</span></span></div>
+            <div id="st-days"></div><div class="xlabels" id="st-dx"></div>
+          </div>
+          <div class="panel">
+            <div class="phead"><h2>When apps call</h2><span class="grow"></span>
+              <span class="stamp">your local time</span></div>
+            <div id="st-heat"></div>
+          </div>
+          <div class="panel">
+            <div class="phead"><h2>Servers</h2></div>
+            <div class="scroll"><table id="st-servers"></table></div>
+          </div>
+          <div class="panel">
+            <div class="phead"><h2>Tool chains</h2><span class="grow"></span>
+              <span class="stamp">called one right after the other</span></div>
+            <div id="st-chains"></div>
+          </div>
+        </div>
+        <div class="panel" id="st-audit">
+          <div class="phead"><h2>Audit</h2><span class="grow"></span>
+            <span class="stamp">what the manager changed by itself</span></div>
+          <div class="checks" id="st-audit-list"></div>
+        </div>
+        <div class="panel">
+          <div class="phead"><h2>Apps</h2><span class="grow"></span>
+            <span class="stamp">per key · what the adaptive ranking would list</span></div>
+          <div class="scroll"><table id="st-apps"></table></div>
+        </div>
+        <div class="panel">
+          <div class="phead"><h2>Tools</h2><span class="grow"></span>
+            <input id="st-filter" placeholder="filter…" oninput="drawStatTools()" autocomplete="off"></div>
+          <div class="scroll tall"><table id="st-tools"></table></div>
+        </div>
+      </section>
+
+      <section data-view="servers">
+        <div class="pagehead"><h1>Servers</h1><p>The MCP servers behind the manager. Every app reaches them through one endpoint, with its own key.</p></div>
+        <div class="toolbar"><button class="primary" onclick="editUpstream()">Add server</button></div>
+        <div class="grid" id="ups"></div>
+      </section>
+
+      <section data-view="keys">
+        <div class="pagehead"><h1>Keys</h1><p>One key per app. A key’s group decides which tools its app sees.</p></div>
+        <div class="toolbar">
+          <input id="k-label" class="grow" placeholder="label, e.g. the app's name" onkeydown="if (event.key === 'Enter') addKey()">
+          <select id="k-group"></select>
+          <button class="primary" onclick="addKey()">Generate key</button>
+        </div>
+        <div class="panel"><div class="scroll"><table id="keys"></table></div></div>
+      </section>
+
+      <section data-view="groups">
+        <div class="pagehead"><h1>Groups</h1><p>What each app sees: every tool (Direct), chosen defaults plus search (Hybrid), or that plus what it uses most (Adaptive).</p></div>
+        <div class="toolbar">
+          <input id="g-name" class="grow" placeholder="new group name" onkeydown="if (event.key === 'Enter') addGroup()">
+          <button class="primary" onclick="addGroup()">Add group</button>
+        </div>
+        <div class="grid" id="groups"></div>
+      </section>
+
+      <section data-view="tools">
+        <div class="pagehead"><h1>Tools</h1><p>Every tool on every server. Edit a description to change what the model reads and what search finds.</p></div>
+        <div class="toolbar">
+          <input id="filter" class="grow" placeholder="filter by name, server or description…" oninput="drawTools()" autocomplete="off">
+          <span class="badge" id="tools-count"></span>
+        </div>
+        <div class="panel"><div class="scroll tall"><table id="tools"></table></div></div>
+        <p class="hint" style="margin:.6rem .2rem 0">Edits change both what search matches on and what the model reads.</p>
+      </section>
+
+      <section data-view="search">
+        <div class="pagehead"><h1>Search</h1><p>The same search your apps’ models run — by meaning, not by name.</p></div>
+        <div class="toolbar">
+          <span class="hint" id="engine"></span><span class="grow"></span>
+          <select id="psize" onchange="PAGE = 1; runSearch()" data-tip="results per page">
+            <option>5</option><option selected>10</option><option>20</option><option>50</option>
+          </select>
+        </div>
+        <div class="panel"><div class="scroll" id="results"></div></div>
+      </section>
+    </main>
+  </div>
+</div></div>
+
+<div id="tip" role="tooltip"></div>
+<dialog id="modal"><form method="dialog" id="mform"></form></dialog>
+<dialog id="ask" class="ask"><form method="dialog" id="askform"></form></dialog>
+
+<script>
+let TOOLS = [], GROUPS = [], UPS = [], KEYS = [], STATS = [], DAYS = [], MODE = '', LAT = 0, ALL_USAGE = false;
+let AUDIT = { renamed: [], events: [] };   // what the manager changed by itself (/audit)
+let PERIOD = 30;                 // days shown on the volume chart
+const OPEN = new Set();          // which groups have their defaults picker open
+const PICK = {};                 // the picker's filter text, per group -- survives a re-render
+// the manager's floors, mirrored so the label matches the behaviour: cosine, and word matching
+const FLOOR = { semantic: 0.3, lexical: 0.5 };
+const $ = id => document.getElementById(id);
+const esc = s => (s ?? '').toString().replace(/[&<>"']/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+// a value as a JS literal inside an attribute: JSON makes it a valid string, esc keeps the
+// attribute closed. Never interpolate a name into a handler any other way.
+const js = v => esc(JSON.stringify(v));
+const short = (s, n = 150) => { s = (s ?? '').toString().replace(/\s+/g, ' ');
+  return s.length > n ? esc(s.slice(0, n)) + '…' : esc(s); };
+// stored as ISO/UTC because that is what SQLite holds; shown the way a person reads a log
+const when = s => s ? new Date(s).toLocaleString(undefined,
+  { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+const ago = s => { if (!s) return 'never'; const m = Math.round((Date.now() - new Date(s)) / 60000);
+  return m < 1 ? 'just now' : m < 60 ? m + ' min ago' : m < 1440 ? Math.round(m / 60) + ' h ago' : when(s); };
+const words = s => (s || '').toLowerCase().split(/\s+/).filter(Boolean);
+const matches = (hay, ws) => ws.every(w => hay.includes(w));
+
+// Errors stay on screen until dismissed (see render for the one exception): a message that
+// flashes for four seconds and leaves an empty page reads as "nothing happened".
+function say(msg, isError = false) {
+  const n = $('notice');
+  if (!msg) { n.hidden = true; n.innerHTML = ''; return; }
+  n.hidden = false;
+  n.innerHTML = `<div class="${isError ? 'err' : ''}"><span>${isError ? '✕' : 'ℹ'}</span><span>${esc(msg)}</span>
+    <button onclick="say('')">Dismiss</button></div>`;
+  if (!isError) setTimeout(() => { if (n.textContent.includes(msg)) say(''); }, 4000);
+}
+const fail = e => say(e.message, true);
+
+// The page is a pure API client, so it can be served from anywhere -- the manager next door,
+// a static host, or opened straight from disk. Blank means "the manager this page came from",
+// and opened from disk it means a manager on this machine. Storage can be switched off (private
+// windows, pages opened from disk), and a throw there would stop the whole page: fall back to memory.
+const MEM = {};
+const stored = (area, k) => { try { return window[area].getItem(k) || ''; } catch { return MEM[area + k] || ''; } };
+const store = (area, k, v) => { try { window[area].setItem(k, v); } catch { MEM[area + k] = v; } };
+const LOCAL = 'http://127.0.0.1:8899';
+const fallback = () => location.protocol.startsWith('http') ? location.origin : LOCAL;
+// A manager that gained TLS keeps its host and port; a browser still holding the cached
+// http address would call a dead socket and read that as a broken page. When this page is
+// https, the http form of its own origin is stale, not a preference -- heal it and keep it.
+const base = () => {
+  let b = stored('localStorage', 'server') || fallback();
+  if (location.protocol === 'https:' && b.startsWith('http://') &&
+      b.slice(7).replace(/\/+$/, '') === location.host) {
+    b = 'https://' + location.host;
+    store('localStorage', 'server', b);
+  }
+  return b.replace(/\/+$/, '');
+};
+const mcpUrl = () => base() + '/mcp';
+
+async function api(path, opts = {}) {
+  let r;
+  try {
+    r = await fetch(base() + '/api/v1' + path, { headers: {
+      authorization: 'Bearer ' + stored('localStorage', 'token'), 'content-type': 'application/json' }, ...opts });
+  } catch {
+    // a dead socket (or a mixed-content block) reads as "Failed to fetch", which says nothing:
+    // name the address that failed and the one mistake that causes it since the TLS change
+    throw new Error('cannot reach ' + base() + ' — is the manager running? If it serves HTTPS, the address must start with https://');
+  }
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
+    const msg = e.error || ('HTTP ' + r.status);
+    // a cached token the manager refuses must not survive the page: drop it so the next
+    // render asks for a fresh one instead of failing on the stale value forever
+    if (r.status === 401) { store('localStorage', 'token', ''); }
+    throw new Error(r.status === 401
+      ? msg + ' — use MCPM_ADMIN_TOKEN from .env (it starts mcpm_admin_); app keys are refused here' : msg);
+  }
+  return r.json();
+}
+const send = (path, method, body) => api(path, { method, body: body === undefined ? undefined : JSON.stringify(body) });
+// every write reports its own failure; a click that silently does nothing is the worst outcome
+const act = fn => async (...a) => { try { await fn(...a); } catch (e) { fail(e); render(); } };
+
+/* ---- one modal, used for everything --------------------------------------- */
+function openModal(title, fields, onSave, saveLabel = 'Save') {
+  // placeholder shows an example of the format; oninput/after let one field carry a helper
+  // control (the server editor's Test connection button) without the modal knowing what it does;
+  // options makes the field a select, type sets the input type (the settings token field).
+  const attrs = f => (f.readonly ? 'readonly ' : '')
+    + (f.placeholder ? `placeholder="${esc(f.placeholder)}" ` : '')
+    + (f.type ? `type="${f.type}" ` : '')
+    + (f.oninput ? `oninput="${f.oninput}" ` : '');
+  const control = f => {
+    if (f.options) return `<select id="f-${f.id}">${f.options.map(([v, t]) =>
+      `<option value="${esc(v)}" ${String(v) === String(f.value) ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>`;
+    return f.area ? `<textarea id="f-${f.id}" ${attrs(f)}>${esc(f.value ?? '')}</textarea>`
+                  : `<input id="f-${f.id}" value="${esc(f.value ?? '')}" ${attrs(f)}>`;
+  };
+  // Close is type=button: Enter submits with the form's FIRST submit button, and when that was
+  // Close, Enter in any field threw the input away. The error line lives in the dialog because
+  // the page's notice sits under the backdrop, where a failed save looked like nothing happened.
+  $('mform').innerHTML = `<h3>${esc(title)}</h3>` + fields.map(f => `
+    <label class="field"><span>${esc(f.label)}</span>${control(f)}</label>${f.after ?? ''}`).join('')
+    + `<div class="err-line" id="merr" style="margin:0 0 .6rem" hidden></div>
+       <div class="row" style="justify-content:flex-end">
+         <button type="button" onclick="$('modal').close()">Close</button>
+         <button class="primary" id="msave">${esc(saveLabel)}</button></div>`;
+  $('mform').onsubmit = async e => {
+    e.preventDefault();
+    const vals = Object.fromEntries(fields.map(f => [f.id, $('f-' + f.id).value.trim()]));
+    const btn = $('msave');
+    btn.disabled = true; $('merr').hidden = true;   // a save can wait on a server connecting
+    try { await onSave(vals); $('modal').close(); }
+    catch (err) { $('merr').textContent = err.message; $('merr').hidden = false; }
+    finally { btn.disabled = false; }
+  };
+  // showModal() throws if a dialog is somehow still open, and act() would turn that into a
+  // generic error with no modal at all -- never let a stale dialog swallow the new one
+  if ($('modal').open) $('modal').close();
+  $('modal').showModal();
+}
+
+// The same dialog with nothing to save: text to read, and Close
+function showInfo(title, body) {
+  $('mform').innerHTML = `<h3>${esc(title)}</h3><div class="infobody">${body}</div>
+    <div class="row" style="justify-content:flex-end"><button type="button" onclick="$('modal').close()">Close</button></div>`;
+  $('mform').onsubmit = e => e.preventDefault();
+  if ($('modal').open) $('modal').close();
+  $('modal').showModal();
+}
+
+/* ---- the page's own confirm ---------------------------------------------------- */
+// The browser's confirm() is an unstyled box; this one matches the page. Enter confirms, Esc and
+// Cancel do not -- like the native one. Destructive actions get a red button.
+function ask(title, message, ok = 'Continue', tone = 'warn') {
+  return new Promise(resolve => {
+    const d = $('ask');
+    $('askform').innerHTML = `<div class="ask-head"><span class="cico ${tone}">${ico(tone === 'crit' ? 'trash' : 'alert')}</span>
+        <h3>${esc(title)}</h3></div>
+      <p>${esc(message)}</p>
+      <div class="row" style="justify-content:flex-end">
+        <button type="button" id="askno">Cancel</button>
+        <button value="yes" id="askyes" class="${tone === 'crit' ? 'dangerbtn' : 'primary'}">${esc(ok)}</button></div>`;
+    $('askno').onclick = () => d.close('');
+    d.onclose = () => resolve(d.returnValue === 'yes');
+    d.returnValue = '';
+    if (d.open) d.close('');
+    d.showModal();
+    $('askyes').focus();
+  });
+}
+
+/* ---- the rail switches views ---------------------------------------------- */
+function showView(name) {
+  const h = document.querySelector(`section[data-view="${name}"] .pagehead h1`);
+  document.title = h ? `${h.textContent} · MCP-Manager` : 'MCP-Manager';
+  for (const b of document.querySelectorAll('#rail button')) b.classList.toggle('on', b.dataset.view === name);
+  for (const p of document.querySelectorAll('[data-view]')) p.classList.toggle('on', p.dataset.view === name);
+  store('localStorage', 'view', name);
+  if (name === 'stats') loadStats();
+}
+for (const b of document.querySelectorAll('#rail button')) b.onclick = () => showView(b.dataset.view);
+
+/* ---- render -------------------------------------------------------------- */
+// A render asked for while one is running runs again after it: dropping it left the page
+// showing data from before a save. A failed refresh's error clears when a refresh succeeds;
+// a failed write's error stays until dismissed -- act() re-renders right after showing it.
+let busy = false, again = false, renderFailed = false;
+// Nothing about the manager shows until the admin token works: with no token, or one the
+// manager refused (api() drops it on a 401), the page is the lock wall and the way in. Closing
+// the token dialog leaves the wall, whose button opens it again.
+function lock(on, why = '') {
+  document.body.classList.toggle('locked', on);
+  $('lockerr').textContent = why;
+  $('lockerr').hidden = !why;
+}
+async function render() {
+  if (!stored('localStorage', 'token')) {
+    lock(true);
+    if (!$('modal').open) settings();
+    return;
+  }
+  if (busy) { again = true; return; }
+  busy = true;
+  const t0 = performance.now();
+  try {
+    // The search call is only to learn which engine is answering -- semantic or lexical.
+    const [groups, ups, keys, tools, stats, probe, audit] = await Promise.all([
+      api('/groups'), api('/upstreams'), api('/keys'), api('/tools'), api('/stats'),
+      send('/search', 'POST', { query: '', page_size: 1 }),
+      api('/audit').catch(() => ({ renamed: [], events: [] }))]);   // an older manager has none
+    AUDIT = audit;
+    LAT = Math.round(performance.now() - t0);
+    // an older manager answers /stats with the bare per-tool list and no days series; the
+    // page still works, the chart just says there is no history yet
+    const sd = Array.isArray(stats) ? { tools: stats, days: [] } : stats;
+    TOOLS = tools; GROUPS = groups; UPS = ups; KEYS = keys; STATS = sd.tools; DAYS = sd.days || [];
+    MODE = probe.mode;
+    drawHero(); drawUsage(); drawChecks(); drawChart();
+    $('groups').innerHTML = groups.map(groupCard).join('') || '<div class="empty">no groups</div>';
+    drawServers(); drawKeys(); drawTools();
+    if (document.querySelector('section[data-view="stats"].on')) loadStats();
+    // a rename shows everywhere at once: an open search is asked again, not left with old names
+    if (SEARCHING && document.querySelector('section[data-view="search"].on') && $('gsearch').value.trim()) runSearch();
+    const down = UPS.some(u => u.status === 'down');
+    $('bell-dot').hidden = $('rail-dot').hidden = !down;
+    $('bell').dataset.tip = down ? UPS.filter(u => u.status === 'down').map(u => u.name).join(', ') + ' — offline'
+                                 : 'All servers connected';
+    $('bell').setAttribute('aria-label', $('bell').dataset.tip);
+    $('stamp').textContent = 'updated ' + new Date().toLocaleTimeString() + ' · ' + LAT + ' ms';
+    lock(false);
+    if (renderFailed) { renderFailed = false; say(''); }
+  } catch (e) {
+    if (!stored('localStorage', 'token')) lock(true, e.message);   // refused: back to the wall
+    else { renderFailed = true; fail(e); }
+  }
+  finally { busy = false; if (again) { again = false; render(); } }
+}
+
+/* ---- overview: the endpoint + servers card, the chart -------------------------- */
+// One card answers "where do my apps connect, and does what is behind it answer": the endpoint,
+// the servers' health, and which search engine is answering.
+function drawHero() {
+  const live = UPS.filter(u => u.enabled);
+  const ok = live.filter(u => u.status === 'connected').length;
+  const not = live.filter(u => u.status !== 'connected');
+  const pct = live.length ? Math.round(ok / live.length * 100) : 100;
+  const r = 26, c = 2 * Math.PI * r;
+  const semantic = MODE === 'semantic';
+  $('endpoint').innerHTML = `<div class="lbl">MCP endpoint — where your apps connect</div>
+    <div class="url">${esc(mcpUrl())}</div>
+    <div class="row between">
+      <span class="dim">streamable HTTP · keys are under the key icon</span>
+      <button type="button" onclick="navigator.clipboard?.writeText(${js(mcpUrl())}); say('copied')">Copy</button>
+    </div>
+    <div class="servers">
+      <svg width="64" height="64" viewBox="0 0 72 72" style="flex:none" role="img" aria-label="${pct}% of servers connected">
+        <circle cx="36" cy="36" r="${r}" fill="none" stroke="var(--hero-line)" stroke-width="9"/>
+        <circle cx="36" cy="36" r="${r}" fill="none" stroke="${pct === 100 ? 'var(--hero-ink)' : 'var(--warn)'}"
+          stroke-width="9" stroke-linecap="round" stroke-dasharray="${(c * pct / 100).toFixed(1)} ${c.toFixed(1)}"
+          transform="rotate(-90 36 36)"/>
+        <text x="36" y="41" text-anchor="middle" fill="var(--hero-ink)" font-size="14" font-weight="700">${pct}%</text></svg>
+      <div class="grow">
+        <div class="lbl">Servers</div>
+        <div class="val">${ok} of ${live.length} connected</div>
+        <div class="dim ${not.length ? 'bad' : ''}">${not.length
+          ? not.map(u => esc(u.name) + ' ' + esc((STATE[u.status]?.[2] || u.status).toLowerCase())).join(', ') + ' — the manager keeps retrying'
+          : 'every enabled server answers'}</div>
+        <div class="dim ${semantic ? '' : 'bad'}">${TOOLS.length} tools · ${semantic ? 'semantic search' : 'search is word matching only'}</div>
+      </div>
+    </div>`;
+}
+
+// The volume chart: one measure, so one line. Days with no calls are drawn as zero, because a
+// gap would read as missing data, not as a quiet day.
+function periodDays() {
+  const days = [];
+  const byDay = Object.fromEntries(DAYS.map(d => [d.day, d.calls]));
+  const now = new Date();
+  for (let i = PERIOD - 1; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    days.push({ day: key, calls: byDay[key] || 0 });
+  }
+  return days;
+}
+// Points stay numbers until they are written into the path: as toFixed() strings, (x0 + x1) / 2
+// concatenated and every control point came out NaN -- the line never drew.
+const f1 = n => n.toFixed(1);
+function smoothPath(pts) {
+  if (pts.length < 2) return '';
+  let d = `M${f1(pts[0][0])},${f1(pts[0][1])}`;
+  for (let i = 1; i < pts.length; i++) {
+    const [x0, y0] = pts[i - 1], [x1, y1] = pts[i], mx = (x0 + x1) / 2;
+    d += ` C${f1(mx)},${f1(y0)} ${f1(mx)},${f1(y1)} ${f1(x1)},${f1(y1)}`;
+  }
+  return d;
+}
+function drawChart() {
+  // The big number answers for the period the toggle shows, like the chart under it; an older
+  // manager with no daily series can only give the all-time count, and says so.
+  if (!DAYS.length) {
+    $('calls-total').textContent = STATS.reduce((n, s) => n + s.calls, 0).toLocaleString();
+    $('calls-sub').textContent = 'all time';
+    $('chart').innerHTML = '<div class="empty" style="padding:2.5rem 0">no call history yet — usage appears here as apps call tools</div>';
+    $('xlabels').innerHTML = ''; return;
+  }
+  const days = periodDays();
+  $('calls-total').textContent = days.reduce((n, d) => n + d.calls, 0).toLocaleString();
+  $('calls-sub').textContent = `in the last ${PERIOD} days`;
+  const vals = days.map(d => d.calls), max = Math.max(1, ...vals);
+  const w = 600, h = 210, pad = 8, floor = h - 26;
+  const pts = vals.map((v, i) => [
+    pad + i * (w - 2 * pad) / Math.max(1, vals.length - 1),
+    floor - (v / max) * (floor - pad - 6)]);
+  const line = smoothPath(pts);
+  const area = `${line} L${f1(pts[pts.length - 1][0])},${floor} L${f1(pts[0][0])},${floor} Z`;
+  const fmt = k => { const [, m, dd] = k.split('-');
+    return ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][+m - 1] + ' ' + +dd; };
+  // The marker stands on today, dropped to the axis; hovering moves it to the day under the
+  // pointer and the tooltip gives that day's count -- a curve alone has no numbers on it.
+  const [lx, ly] = pts[pts.length - 1].map(f1);
+  $('chart').innerHTML = `<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="calls per day">
+    <defs><linearGradient id="fade" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="var(--ink)" stop-opacity=".14"/>
+      <stop offset="1" stop-color="var(--ink)" stop-opacity="0"/></linearGradient></defs>
+    <line x1="${pad}" y1="${floor}" x2="${w - pad}" y2="${floor}" stroke="var(--grid)"/>
+    <path d="${area}" fill="url(#fade)"/>
+    <path d="${line}" fill="none" stroke="var(--ink)" stroke-width="2.5" stroke-linecap="round"/>
+    <line id="cmark" x1="${lx}" y1="${ly}" x2="${lx}" y2="${h}" stroke="var(--ink)" stroke-width="1.5"/>
+    <circle id="cdot" cx="${lx}" cy="${ly}" r="5.5" fill="var(--surface)" stroke="var(--ink)" stroke-width="2.5"/>
+    <rect width="${w}" height="${h}" fill="transparent"/></svg>`;
+  const svg = $('chart').firstElementChild;
+  const put = i => {
+    const [x, y] = pts[i];
+    for (const [id, a] of [['cmark', ['x1', 'x2']], ['cdot', ['cx']]]) for (const k of a) $(id).setAttribute(k, x);
+    $('cmark').setAttribute('y1', y); $('cdot').setAttribute('cy', y);
+  };
+  svg.onmousemove = e => {
+    const r = svg.getBoundingClientRect();
+    const i = Math.max(0, Math.min(pts.length - 1,
+      Math.round(((e.clientX - r.left) / r.width * w - pad) / ((w - 2 * pad) / (pts.length - 1)))));
+    put(i);
+    svg.dataset.tip = `${fmt(days[i].day)} — ${days[i].calls.toLocaleString()} call${days[i].calls === 1 ? '' : 's'}`;
+  };
+  svg.onmouseleave = () => { put(pts.length - 1); delete svg.dataset.tip; };
+  const ticks = [0, .25, .5, .75, 1].map(f => days[Math.min(days.length - 1, Math.round(f * (days.length - 1)))]);
+  $('xlabels').innerHTML = ticks.map((d, i) => i === ticks.length - 1
+    ? `<b>${fmt(d.day)}</b>` : `<span>${fmt(d.day)}</span>`).join('');
+}
+for (const b of document.querySelectorAll('#period button')) b.onclick = () => {
+  PERIOD = +b.dataset.days;
+  for (const o of document.querySelectorAll('#period button')) o.classList.toggle('on', o === b);
+  drawChart();
+};
+
+
+// The most-used (or most-recently-used) tools, as a ledger: what ran, where, when, how often.
+// The ⋮ opens the description editor for that tool.
+function drawUsage() {
+  const recent = $('sortby').value === 'recent';
+  const sorted = STATS.slice().sort(recent
+    ? (a, b) => (b.last_seen || '').localeCompare(a.last_seen || '')
+    : (a, b) => b.calls - a.calls);
+  const rows = ALL_USAGE ? sorted : sorted.slice(0, 10);
+  $('usage').innerHTML = rows.map(s => `<div class="arow" data-tip="${esc(`${s.tool} on ${s.upstream} — ${s.calls} calls, last ${ago(s.last_seen)}`)}">
+      <div class="anm"><b data-tip="${esc(s.tool)}">${esc(s.tool)}</b><small>${esc(s.upstream)}</small></div>
+      <div class="atime">${esc(ago(s.last_seen))}</div>
+      <div class="aval">${s.calls.toLocaleString()}</div>
+      <button class="dotsbtn" data-tip="edit this tool's description"
+              onclick="editTool(${js(s.upstream)}, ${js(s.tool)})"><svg class="ic" viewBox="0 0 24 24"
+        fill="currentColor"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg></button>
+    </div>`).join('')
+    || '<div class="empty">no calls recorded yet — usage appears here as apps call tools</div>';
+  $('usage-more').innerHTML = sorted.length > 10
+    ? `<button onclick="ALL_USAGE = !ALL_USAGE; drawUsage()">${ALL_USAGE ? 'Show top 10' : `Show all ${sorted.length}`}</button>` : '';
+}
+
+// One stroke icon set for statuses, headers and diagnostics: the rail's own line weight.
+const ICONS = {
+  online: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
+  offline: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/><path d="M3 3l18 18"/>',
+  connecting: '<path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v5h-5"/>',
+  disabled: '<path d="M12 3v8"/><path d="M6.3 6.6a8 8 0 1 0 11.4 0"/>',
+  lock: '<rect x="5" y="11" width="14" height="9" rx="2.5"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
+  key: '<circle cx="7.5" cy="15.5" r="4"/><path d="M10.3 12.7 20 3m-4 0h4v4"/>',
+  tag: '<path d="M3 12V4h8l10 10-8 8z"/><path d="M7.5 7.5h.01"/>',
+  pulse: '<path d="M3 12h4l3-7 4 14 3-7h4"/>',
+  servers: '<rect x="3" y="4" width="18" height="7" rx="2.5"/><rect x="3" y="13" width="18" height="7" rx="2.5"/><path d="M7 7.5h.01M7 16.5h.01"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
+  alert: '<path d="M12 3.5 2.5 20h19z"/><path d="M12 10v4.5M12 17.2h.01"/>',
+  trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
+  pen: '<path d="M4 20h4L19.5 8.5a2.8 2.8 0 0 0-4-4L4 16z"/><path d="m13.5 6.5 4 4"/>',
+  ban: '<circle cx="12" cy="12" r="9"/><path d="m5.7 5.7 12.6 12.6"/>',
+  eye: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/>',
+  group: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.4 3.4-5 6.5-5s5.7 1.6 6.5 5"/><circle cx="17" cy="9" r="2.5"/><path d="M16.5 14.6c2.6.3 4.4 1.8 5 4.4"/>',
+};
+const ico = name => `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+  stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ''}</svg>`;
+const STATE = {
+  connected: ['good', 'online', 'Online'], connecting: ['warn', 'connecting', 'Connecting'],
+  down: ['crit', 'offline', 'Offline'], disabled: ['off', 'disabled', 'Disabled'] };
+const pill = s => { const [cls, icon, text] = STATE[s] || ['off', 'alert', s];
+  return `<span class="st ${cls}">${ico(icon)}${esc(text)}</span>`; };
+// a header the server is sent: its name only (the value is a secret), with what kind it is
+const headerIcon = h => /^authorization$/i.test(h) ? 'lock' : /key|token|secret|auth|cookie/i.test(h) ? 'key' : 'tag';
+
+// Things worth knowing that no single table shows.
+function drawChecks() {
+  const items = [];
+  const add = (tone, icon, title, sub) => items.push(`<div class="check ${tone}"><span class="cico">${ico(icon)}</span>
+    <div><b>${esc(title)}</b>${sub ? `<div class="sub">${sub}</div>` : ''}</div></div>`);
+  add(LAT < 500 ? 'good' : 'warn', 'pulse', `Admin API answering in ${LAT} ms`, esc(base() + '/api/v1'));
+  add('good', 'online', 'MCP endpoint for apps', `<code>${esc(mcpUrl())}</code>
+    <button style="margin-left:.4rem;padding:.05rem .45rem" onclick="navigator.clipboard?.writeText(${js(mcpUrl())}); say('copied')">Copy</button>`);
+  const down = UPS.filter(u => u.status === 'down');
+  if (down.length) add('crit', 'offline', `${down.length} server${down.length > 1 ? 's' : ''} offline — the manager keeps retrying`,
+    down.map(u => esc(u.name)).join(', '));
+  else add('good', 'servers', 'Every enabled server is online');
+  add(MODE === 'semantic' ? 'good' : 'warn', 'search',
+      MODE === 'semantic' ? 'Search is semantic (embeddings online)' : 'Search is lexical — embeddings unavailable',
+      MODE === 'semantic' ? '' : 'Tool search falls back to word matching until the embedding model answers.');
+  const stale = GROUPS.filter(g => g.unresolved.length);
+  if (stale.length) add('warn', 'alert', 'Defaults that name no tool right now',
+    stale.map(g => `${esc(g.name)}: ${g.unresolved.map(esc).join(', ')}`).join(' · '));
+  const unused = KEYS.filter(k => !k.revoked && !k.last_used_at);
+  if (unused.length) add('off', 'key', `${unused.length} key${unused.length > 1 ? 's' : ''} never used`,
+    unused.map(k => esc(k.label)).join(', '));
+  // What the manager did by itself, said plainly, with the way to the full story.
+  const open = '<button style="margin-left:.4rem;padding:.05rem .55rem" onclick="openAudit()">See what changed</button>';
+  if (AUDIT.renamed.length) {
+    const n = AUDIT.renamed.reduce((k, r) => k + r.servers.length, 0);
+    add('off', 'tag', `${n} tools were renamed automatically`,
+        `Two servers have a tool with the same name (${AUDIT.renamed.map(r => esc(r.tool)).join(', ')}), so each `
+        + `now carries its server's name.${open}`);
+  }
+  const week = new Date(Date.now() - 7 * 864e5).toISOString();
+  const moved = AUDIT.events.filter(e => e.kind === 'default' && e.ts >= week);
+  if (moved.length) add('off', 'servers', `${moved.length} group default${moved.length > 1 ? 's' : ''} updated automatically`,
+    `They followed a renamed tool, so the groups still list the same tools.${open}`);
+  $('checks').innerHTML = items.join('');
+}
+
+const MODE_HINT = {
+  direct: 'Every tool from the group’s servers is in the app’s tool list. Nothing to search.',
+  hybrid: 'The defaults below are in the app’s tool list. Everything else is reached with '
+    + '<code>search_tools</code> and <code>call_tool</code>, on every client. Using one tool opens its whole server to that conversation.',
+  adaptive: g => `The app’s tool list gets the defaults below plus up to ${g.adaptive_cap} tools it is likely `
+    + 'to use, learned per key from its own calls: how often, how lately, and which tool usually comes next. '
+    + 'Everything else stays reachable with <code>search_tools</code> and <code>call_tool</code>. '
+    + 'A new key starts with none; a tool that falls out of use leaves, and a likelier one takes its place. '
+    + 'The app sees the change the next time it lists its tools. Stats shows what each app has learned.',
+};
+// 10 is the measured default; the steps up to 50, plus whatever the API set if it is in between
+const CAP_STEPS = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50];
+const capPicker = g => `<label class="capline" data-tip="More learned tools cover more of each app's habits — and add tokens to every request it makes">
+    Learned tools
+    <select onchange="saveGroup(${js(g.name)}, {adaptive_cap: +this.value})" aria-label="Learned tools listed for ${esc(g.name)}">
+      ${[...new Set([...CAP_STEPS, g.adaptive_cap])].sort((a, b) => a - b).map(n =>
+        `<option value="${n}" ${n === g.adaptive_cap ? 'selected' : ''}>${n}${n === 10 ? ' (default)' : ''}</option>`).join('')}
+    </select></label>`;
+function groupCard(g) {
+  const searching = g.mode !== 'direct';
+  const keys = g.keys.length;
+  return `<div class="card">
+    <div class="row">
+      <b class="grow">${esc(g.name)}</b>
+      <span class="badge" data-tip="${esc(g.keys.join(', '))}">${keys} key${keys === 1 ? '' : 's'}</span>
+      <button class="cardicon" onclick="renameGroup(${js(g.name)})" data-tip="Rename this group"
+              aria-label="Rename ${esc(g.name)}">${ico('pen')}</button>
+      <button class="cardicon danger" onclick="removeGroup(${js(g.name)})"
+              data-tip="Delete this group, and the keys in it" aria-label="Delete ${esc(g.name)}">${ico('trash')}</button>
+    </div>
+    <div class="row" style="margin-top:.6rem">
+      <div class="seg" role="group" aria-label="mode">${['direct', 'hybrid', 'adaptive'].map(m =>
+        `<button class="${g.mode === m ? 'on' : ''}" onclick="saveGroup(${js(g.name)}, {mode: '${m}'})">${m[0].toUpperCase() + m.slice(1)}</button>`).join('')}
+      </div>
+      <span class="badge">${g.mode === 'direct' ? `all ${g.sees} tools listed`
+        : g.mode === 'adaptive' ? `${g.sees} listed + up to ${g.adaptive_cap} learned + search` : `${g.sees} listed + search`}</span>
+    </div>
+    ${g.mode === 'adaptive' ? capPicker(g) : ''}
+    <p class="hint" style="margin:.6rem 0 0">${(typeof MODE_HINT[g.mode] === 'function' ? MODE_HINT[g.mode](g) : MODE_HINT[g.mode]) || ''}</p>
+    ${serversEditor(g)}
+    ${searching ? defaultsEditor(g) : ''}
+  </div>`;
+}
+
+// Which servers a group reaches. Automatic follows the registry, new servers included. Turning it
+// off starts from every server ticked, so nothing changes for the group's apps until one is unticked.
+function serversEditor(g) {
+  const auto = g.servers === null;
+  return `<div class="grp-servers">
+    <label class="autoline" data-tip="New servers join this group by themselves. Turn it off to choose them.">
+      <input type="checkbox" ${auto ? 'checked' : ''} onchange="setAutoServers(${js(g.name)}, this.checked)">
+      Automatically add all MCP servers</label>
+    ${auto ? '' : `<div class="pins">${UPS.map(u => `<label data-tip="${esc(u.status)} — ${u.tools} tool${u.tools === 1 ? '' : 's'}">
+        <input type="checkbox" ${g.servers.includes(u.name) ? 'checked' : ''}
+          onchange="setGroupServer(${js(g.name)}, ${js(u.name)}, this.checked)">
+        ${esc(u.name)}<span class="n">${u.tools}</span></label>`).join('')}</div>
+      ${g.servers.length ? '' : '<p class="hint" style="margin:.4rem 0 0">No servers chosen: this group’s apps can reach no tools.</p>'}`}
+  </div>`;
+}
+
+const DEFAULTS_HINT = {
+  hybrid: 'The tools this group’s apps always have in their list, ready to call. Pick the ones they use most: '
+    + 'every other tool stays reachable through search_tools and call_tool.',
+  adaptive: 'The tools this group’s apps always have in their list, ready to call. What each app learns to use '
+    + 'is listed after them, and every other tool stays reachable through search_tools and call_tool.',
+};
+function defaultsEditor(g) {
+  const chips = g.defaults.map(d => {
+    const gone = g.unresolved.includes(d);
+    return `<span class="chip ${gone ? 'warn' : ''}" data-tip="${gone ? 'no tool to reach by this name — its server may be down, or not in this group' : ''}">
+      ${esc(d)}<button data-tip="remove" onclick="setDefault(${js(g.name)}, ${js(d)}, false)">×</button></span>`;
+  }).join('');
+  const ws = words(PICK[g.name]);
+  const byServer = {};
+  for (const t of TOOLS) if ((g.servers === null || g.servers.includes(t.upstream))
+      && matches((t.exposed + ' ' + t.upstream + ' ' + t.description).toLowerCase(), ws))
+    (byServer[t.upstream] ||= []).push(t);
+  return `<div class="chips">${chips || `<span class="hint" style="margin:0">no defaults — the app sees only the manager’s four tools: search_tools, call_tool, list_mcpservers, get_tools_from_server${g.mode === 'adaptive' ? ', plus what it learns' : ''}</span>`}</div>
+    <details ${OPEN.has(g.name) ? 'open' : ''} ontoggle="this.open ? OPEN.add(${js(g.name)}) : OPEN.delete(${js(g.name)})">
+      <summary>choose defaults<span class="sumhint">${DEFAULTS_HINT[g.mode]}</span></summary>
+      <div class="picker">
+        <input class="grow" style="width:100%" placeholder="filter…" value="${esc(PICK[g.name] || '')}"
+               oninput="PICK[${js(g.name)}] = this.value; redrawGroup(${js(g.name)}, this)">
+        ${Object.entries(byServer).map(([server, tools]) => `<div class="server">${esc(server)}</div>
+          <div class="pins">${tools.map(t => `<label data-tip="${esc(t.description)}"><input type="checkbox"
+            ${g.defaults.includes(t.exposed) ? 'checked' : ''}
+            onchange="setDefault(${js(g.name)}, ${js(t.exposed)}, this.checked)"> ${esc(t.exposed)}</label>`).join('')}
+          </div>`).join('') || '<div class="empty">no tool matches</div>'}
+      </div>
+    </details>`;
+}
+
+// filtering one picker must not rebuild the page under the cursor
+function redrawGroup(name, input) {
+  const i = GROUPS.findIndex(g => g.name === name);
+  const card = input.closest('.card');
+  const pos = input.selectionStart;
+  card.outerHTML = groupCard(GROUPS[i]);
+  const again = $('groups').children[i].querySelector('.picker input');
+  again.focus(); again.setSelectionRange(pos, pos);
+}
+
+// Servers are cards, like everything else you look at rather than compare column by column.
+// A server card: who it is (name, address) and how it is (state, tools) side by side at the top;
+// what it sends and any error in the middle; switches and actions pinned to the bottom, so cards
+// in a row line up whatever is in the middle.
+function drawServers() {
+  $('ups').innerHTML = (UPS.map(u => `<div class="card srv">
+    <div class="srv-top">
+      <div class="srv-id"><b>${esc(u.name)}</b><code>${esc(u.url)}</code></div>
+      <div class="srv-state">${pill(u.status)}
+        <span class="badge">${u.tools} tool${u.tools === 1 ? '' : 's'}${u.sessions ? ` · ${u.sessions} ${u.shared ? 'shared ' : ''}session${u.sessions === 1 ? '' : 's'}` : ''}</span></div>
+    </div>
+    ${u.error ? `<div class="err-line">${esc(u.error)}</div>` : ''}
+    ${Object.keys(u.headers || {}).length ? `<div class="hdrs">${Object.keys(u.headers).map(h =>
+      `<span class="hdr" data-tip="Sent with every request to ${esc(u.name)}; the value stays in the manager">${ico(headerIcon(h))}${esc(h)}</span>`).join('')}</div>` : ''}
+    <div class="srv-foot">
+      <div class="switches">
+        <label class="switch" data-tip="Off: disconnected, and its tools leave every group">
+          <input type="checkbox" role="switch" ${u.enabled ? 'checked' : ''}
+                 onchange="saveServer(${js(u.name)}, {enabled: this.checked})"><span class="track"></span>On</label>
+        <label class="switch" data-tip="On: all apps in the same group share one session here — one memory, one browser">
+          <input type="checkbox" role="switch" ${u.shared ? 'checked' : ''}
+                 onchange="toggleShared(${js(u.name)}, this)"><span class="track"></span>Shared per group</label>
+      </div>
+      <div class="actions">
+        <button class="cardicon" ${u.enabled ? '' : 'disabled'} onclick="reconnectServer(${js(u.name)}, this)"
+                data-tip="${u.enabled ? 'Reconnect — a fresh session, its headers sent again' : 'Turn it on to connect'}"
+                aria-label="Reconnect ${esc(u.name)}">${ico('connecting')}</button>
+        <button class="cardicon" onclick="editUpstream(${js(u.name)})" data-tip="Edit — name, address, headers, description"
+                aria-label="Edit ${esc(u.name)}">${ico('pen')}</button>
+        <button class="cardicon danger" onclick="removeUpstream(${js(u.name)})" data-tip="Remove this server"
+                aria-label="Remove ${esc(u.name)}">${ico('trash')}</button>
+      </div>
+    </div></div>`).join('')
+    || '<div class="empty">no servers yet — add one with the button above</div>');
+}
+
+function drawKeys() {
+  const options = sel => GROUPS.map(g => `<option ${g.name === sel ? 'selected' : ''}>${esc(g.name)}</option>`).join('');
+  $('k-group').innerHTML = options($('k-group').value);
+  $('keys').innerHTML = '<thead><tr><th>label</th><th>group</th><th>key</th><th>created</th>'
+    + '<th>last used</th><th></th></tr></thead><tbody>' + (KEYS.map(k => `
+    <tr class="${k.revoked ? 'revoked' : ''}"><td><span class="keyname">${esc(k.label)}<button class="cardicon mini" data-tip="Rename this key"
+            aria-label="Rename ${esc(k.label)}" onclick="renameKey(${k.id})">${ico('pen')}</button></span></td>
+      <td>${k.revoked ? esc(k.group_name) : `<select data-tip="move this key to another group — the app keeps its key"
+            onchange="moveKey(${k.id}, this.value)">${options(k.group_name)}</select>`}</td>
+      <td><code>••••${esc(k.hint)}</code></td><td class="desc">${when(k.created_at)}</td>
+      <td class="desc">${esc(ago(k.last_used_at))}</td>
+      <td class="actions">${k.revoked
+        ? `<span class="badge">revoked</span>
+           <button class="cardicon" data-tip="Re-issue — a new secret, and the key works again"
+             aria-label="Re-issue ${esc(k.label)}" onclick="reissueKey(${k.id})">${ico('connecting')}</button>
+           <button class="cardicon danger" data-tip="Delete this key for good"
+             aria-label="Delete ${esc(k.label)}" onclick="deleteKey(${k.id})">${ico('trash')}</button>`
+        : `<button class="cardicon" data-tip="Re-issue — a new secret; the app then needs it"
+             aria-label="Re-issue ${esc(k.label)}" onclick="reissueKey(${k.id})">${ico('connecting')}</button>
+           <button class="cardicon danger" data-tip="Revoke — the app stops connecting at once"
+             aria-label="Revoke ${esc(k.label)}" onclick="revokeKey(${k.id})">${ico('ban')}</button>`}</td></tr>`
+    ).join('') || '<tr><td colspan="6" class="empty">no keys yet — generate one per app</td></tr>') + '</tbody>';
+}
+
+function drawTools() {
+  // AND of words, not one substring: someone typing "ytdl status" means both ideas.
+  // The server is part of the match: most tools are exposed under their plain name.
+  const ws = words($('filter').value);
+  const rows = TOOLS.filter(t => matches((t.upstream + ' ' + t.exposed + ' ' + (t.description || '')).toLowerCase(), ws));
+  $('tools-count').textContent = rows.length === TOOLS.length ? `${TOOLS.length} tools` : `${rows.length} of ${TOOLS.length}`;
+  $('tools').innerHTML = '<thead><tr><th>tool</th><th>server</th><th>description</th><th></th></tr></thead><tbody>' +
+    rows.map(t => `<tr><td><code class="tname">${esc(t.exposed)}</code></td>
+      <td>${esc(t.upstream)}</td>
+      <td class="desc">${t.overridden ? '<b>' + short(t.description, 200) + '</b> <i>(yours)</i>' : short(t.description, 200)}
+        <code class="args">${short(t.arguments, 200)}</code></td>
+      <td><div class="actions">
+        <button class="cardicon" onclick="viewTool(${js(t.upstream)}, ${js(t.tool)})" data-tip="Read the whole description"
+                aria-label="Read the whole description of ${esc(t.exposed)}">${ico('eye')}</button>
+        <button class="cardicon" onclick="editTool(${js(t.upstream)}, ${js(t.tool)})" data-tip="Edit the description"
+                aria-label="Edit the description of ${esc(t.exposed)}">${ico('pen')}</button>
+      </div></td></tr>`).join('')
+    + (rows.length ? '' : '<tr><td colspan="4" class="empty">no tool matches</td></tr>') + '</tbody>';
+}
+
+/* ---- stats: /stats/detail for the window, drawn when the view is open ----------------------- */
+let ST = null, ST_DAYS = 30;
+const ms = v => v == null ? '—' : v < 1000 ? `${v} ms` : v < 60000 ? `${(v / 1000).toFixed(1)} s` : `${(v / 60000).toFixed(1)} min`;
+const pctOf = (n, d) => d ? Math.round(100 * n / d) : 0;
+const tname = t => esc(t.name || t.tool);
+async function loadStats() {
+  if (document.body.classList.contains('locked') || !stored('localStorage', 'token')) return;
+  try {
+    [ST, AUDIT] = await Promise.all([api('/stats/detail?days=' + ST_DAYS),
+                                     api('/audit').catch(() => ({ renamed: [], events: [] }))]);
+    $('st-stamp').textContent = 'updated ' + new Date().toLocaleTimeString();
+    drawStats();
+  } catch (e) { fail(e); }
+}
+for (const b of document.querySelectorAll('#st-period button')) b.onclick = () => {
+  ST_DAYS = +b.dataset.days;
+  for (const o of document.querySelectorAll('#st-period button')) o.classList.toggle('on', o === b);
+  loadStats();
+};
+function drawStats() {
+  if (!ST) return;
+  const failed = ST.calls - (ST.status.ok || 0);
+  const kpi = (label, val, sub, bad) => `<div class="kpi"><div class="lbl">${label}</div><div class="val">${val}</div>
+    <div class="sub ${bad ? 'bad' : ''}">${sub}</div></div>`;
+  $('st-kpis').innerHTML =
+    kpi('Calls', ST.calls.toLocaleString(), `in the last ${ST.days} days`)
+    + kpi('Succeeded', ST.calls ? pctOf(ST.calls - failed, ST.calls) + '%' : '—',
+          failed ? `${failed.toLocaleString()} failed` : 'none failed', failed > 0)
+    + kpi('Typical answer', ms(ST.p50_ms), 'median time per call')
+    + kpi('Slowest 5%', ms(ST.p95_ms), 'take longer than this')
+    + kpi('Apps', ST.apps.filter(a => a.calls).length, 'keys that called')
+    + kpi('Tools used', ST.tools.length, `on ${ST.servers.length} server${ST.servers.length === 1 ? '' : 's'}`);
+  drawStatDays(); drawHeat(); drawStatServers(); drawChains(); drawAudit(); drawApps(); drawStatTools();
+}
+// One measure split by outcome: succeeded in ink, failed stacked on top in the status red. The
+// day series is the overview's (/stats keeps 90 days), cut to the window; a quiet day is zero.
+function drawStatDays() {
+  const byDay = Object.fromEntries(DAYS.map(d => [d.day, d]));
+  const now = new Date(), days = [];
+  for (let i = ST_DAYS - 1; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+    const k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    days.push({ day: k, calls: byDay[k]?.calls || 0, failed: byDay[k]?.failed || 0 });
+  }
+  const w = 600, h = 180, pad = 4, floor = h - 4, max = Math.max(1, ...days.map(d => d.calls));
+  const slot = (w - 2 * pad) / days.length, bw = Math.max(2, slot - 2);
+  const y = v => (v / max) * (floor - 8);
+  $('st-days').innerHTML = `<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="calls per day">
+    <line x1="0" y1="${floor}" x2="${w}" y2="${floor}" stroke="var(--grid)"/>
+    ${days.map((d, i) => {
+      const x = (pad + i * slot + (slot - bw) / 2).toFixed(1), ok = d.calls - d.failed;
+      const tip = esc(`${fmtDay(d.day)} — ${d.calls} call${d.calls === 1 ? '' : 's'}${d.failed ? `, ${d.failed} failed` : ''}`);
+      return `<g data-tip="${tip}"><rect x="${(pad + i * slot).toFixed(1)}" y="0" width="${slot.toFixed(1)}" height="${h}" fill="transparent"/>
+        ${ok ? `<rect x="${x}" y="${(floor - y(ok)).toFixed(1)}" width="${bw.toFixed(1)}" height="${y(ok).toFixed(1)}" rx="2" fill="var(--ink)"/>` : ''}
+        ${d.failed ? `<rect x="${x}" y="${(floor - y(d.calls)).toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(1, y(d.failed) - 2).toFixed(1)}" rx="2" fill="var(--crit)"/>` : ''}</g>`;
+    }).join('')}</svg>`;
+  const ticks = [0, .25, .5, .75, 1].map(f => days[Math.round(f * (days.length - 1))]);
+  $('st-dx').innerHTML = ticks.map(d => `<span>${fmtDay(d.day)}</span>`).join('');
+}
+const fmtDay = k => { const [, m, dd] = k.split('-');
+  return ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][+m - 1] + ' ' + +dd; };
+// Weekday x hour, moved from UTC to this browser's clock. One hue, light to dark: magnitude only.
+function drawHeat() {
+  const off = Math.round(-new Date().getTimezoneOffset() / 60), grid = [...Array(7)].map(() => Array(24).fill(0));
+  ST.heat.forEach((row, dow) => row.forEach((n, hr) => {
+    const t = dow * 24 + hr + off, local = ((t % 168) + 168) % 168;
+    grid[Math.floor(local / 24)][local % 24] += n;
+  }));
+  const max = Math.max(1, ...grid.flat()), names = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  $('st-heat').innerHTML = `<div class="heat">${grid.map((row, d) => `<span>${names[d]}</span>` + row.map((n, hr) =>
+      `<div class="c" data-tip="${names[d]} ${String(hr).padStart(2, '0')}:00 — ${n} call${n === 1 ? '' : 's'}"
+        ${n ? `style="background:color-mix(in srgb, var(--ink) ${Math.round(12 + 80 * n / max)}%, var(--surface-2))"` : ''}></div>`).join('')).join('')}
+      <span></span>${[0, 6, 12, 18].map(hr => `<span class="h">${String(hr).padStart(2, '0')}:00</span>`).join('')}</div>`;
+}
+function drawStatServers() {
+  const max = Math.max(1, ...ST.servers.map(s => s.calls));
+  $('st-servers').innerHTML = '<thead><tr><th>server</th><th class="num">calls</th><th class="num">failed</th>'
+    + '<th class="num">typical</th><th class="num">slowest 5%</th></tr></thead><tbody>'
+    + (ST.servers.map(s => `<tr><td><b>${esc(s.upstream)}</b><div class="bar" style="width:${Math.max(2, 100 * s.calls / max)}%"></div></td>
+      <td class="num">${s.calls.toLocaleString()}</td><td class="num">${s.failed ? pctOf(s.failed, s.calls) + '%' : '—'}</td>
+      <td class="num">${ms(s.p50_ms)}</td><td class="num">${ms(s.p95_ms)}</td></tr>`).join('')
+      || '<tr><td colspan="5" class="empty">no calls in this window</td></tr>') + '</tbody>';
+}
+function drawChains() {
+  $('st-chains').innerHTML = ST.chains.map(c => `<div class="chain">
+      <div><code class="tname">${esc(c.from.tool)}</code><small>${esc(c.from.upstream)}</small></div><span class="hint">→</span>
+      <div><code class="tname">${esc(c.to.tool)}</code><small>${esc(c.to.upstream)}</small></div><span class="n">${c.count}×</span></div>`).join('')
+    || '<div class="empty">no chains yet — they show when an app calls one tool right after another</div>';
+}
+// The audit: the renames standing now (a shared name, and what each server's tool is called
+// instead), then the history of everything the manager changed by itself, newest first.
+function drawAudit() {
+  const row = (tone, icon, title, sub, ts) => `<div class="check ${tone} ${ts ? 'with-time' : ''}">
+    <span class="cico">${ico(icon)}</span><div><b>${title}</b>${sub ? `<div class="sub">${sub}</div>` : ''}</div>
+    ${ts ? `<span class="when">${esc(ago(ts))}</span>` : ''}</div>`;
+  const now = AUDIT.renamed.map(r => row('off', 'tag',
+    `<code>${esc(r.tool)}</code> is on ${r.servers.length} servers`,
+    `<div class="hdrs" style="margin-top:.3rem">${r.servers.map(x =>
+      `<span class="hdr" data-tip="what apps call ${esc(x.upstream)}'s ${esc(r.tool)}">${esc(x.name)}<span class="hint">· ${esc(x.upstream)}</span></span>`).join('')}</div>`));
+  // Groups no app connects through: no keys at all, keys that never connected, or only revoked
+  // ones. Read from the live keys, so it is always as of now.
+  const idle = GROUPS.map(g => {
+    const own = KEYS.filter(k => k.group_name === g.name), live = own.filter(k => !k.revoked);
+    const why = !own.length ? 'has no keys, so no app connects through it'
+      : !live.length ? `has only revoked keys (${own.length}), so no app can connect through it`
+      : live.every(k => !k.last_used_at)
+        ? `has ${live.length} key${live.length > 1 ? 's' : ''} (${live.map(k => esc(k.label)).join(', ')}), never used`
+      : '';
+    return why && row('warn', 'group', `Group “${esc(g.name)}” is not in use`,
+      `It ${why}. ${g.mode === 'direct' ? 'Direct' : g.mode === 'adaptive' ? 'Adaptive' : 'Hybrid'} mode`
+      + `${g.defaults.length ? `, ${g.defaults.length} default${g.defaults.length > 1 ? 's' : ''}` : ''}.`);
+  }).filter(Boolean);
+  // Keys no app has ever connected with, and enabled servers no app called in this window.
+  const unusedKeys = KEYS.filter(k => !k.revoked && !k.last_used_at).map(k => row('warn', 'key',
+    `Key “${esc(k.label)}” has never been used`,
+    `In group ${esc(k.group_name)}, created ${esc(when(k.created_at))}. If no app needs it, revoke it.`));
+  const called = new Set((ST?.servers || []).map(x => x.upstream));
+  const quiet = UPS.filter(u => u.enabled && !called.has(u.name)).map(u => row('warn', 'servers',
+    `Server “${esc(u.name)}” had no calls in the last ${ST?.days || 30} days`,
+    `${u.tools} tools, ${esc((STATE[u.status]?.[2] || u.status).toLowerCase())}. `
+    + 'Turn it off if no app needs it — its tools then leave every list and search.'));
+  const label = { rename: 'Tool renamed', default: 'Group default updated', edit: 'Renamed in the settings' };
+  const past = AUDIT.events.map(e => row(e.kind === 'default' ? 'good' : 'off', e.kind === 'default' ? 'servers' : 'tag',
+    esc(label[e.kind] || e.kind), esc(e.message), e.ts));
+  $('st-audit-list').innerHTML = (now.length ? '<div class="audit-sub">Renamed now</div>' + now.join('') : '')
+    + (idle.length ? '<div class="audit-sub">Groups not in use</div>' + idle.join('') : '')
+    + (unusedKeys.length ? '<div class="audit-sub">Keys never used</div>' + unusedKeys.join('') : '')
+    + (quiet.length ? '<div class="audit-sub">Servers not used</div>' + quiet.join('') : '')
+    + (past.length ? '<div class="audit-sub">History</div>' + past.join('') : '')
+    || '<div class="empty">Nothing to report: every tool name is unique across your servers, every group, key and '
+       + 'server is in use, and no group default needed changing.</div>';
+}
+async function openAudit() {
+  showView('stats');            // which loads the page; wait for that, then go to the audit
+  await loadStats();
+  $('st-audit').scrollIntoView({ block: 'start' });   // drawn by now: loadStats awaited the data
+}
+
+// Each app's adaptive ranking: picked (in its list if its group is adaptive, else what it WOULD
+// list) and the next two in line, faded.
+function drawApps() {
+  $('st-apps').innerHTML = '<thead><tr><th>app</th><th class="num">calls</th><th class="num">tools</th>'
+    + '<th class="num">failed</th><th>last call</th><th>adaptive picks</th></tr></thead><tbody>'
+    + (ST.apps.map(a => {
+      const picks = a.adaptive.filter(t => t.picked), next = a.adaptive.filter(t => !t.picked).slice(0, 2);
+      const listed = a.mode === 'adaptive';
+      const chips = picks.length
+        ? picks.map(t => `<span class="chip ro ${listed ? 'on' : ''}" data-tip="score ${t.score}">${esc(t.name || t.tool)}</span>`).join('')
+          + next.map(t => `<span class="chip ro dim" data-tip="next in line · score ${t.score}">${esc(t.name || t.tool)}</span>`).join('')
+        : '<span class="hint">learning — a tool needs a couple of uses to earn a place</span>';
+      return `<tr><td><b>${esc(a.label)}</b>${a.revoked ? ' <span class="badge">revoked</span>' : ''}<br>
+          <span class="hint">${esc(a.group || '')}${a.mode ? ' · ' + esc(a.mode) : ''}</span></td>
+        <td class="num">${a.calls.toLocaleString()}</td><td class="num">${a.tools_used}</td>
+        <td class="num">${a.failed ? pctOf(a.failed, a.calls) + '%' : '—'}</td><td class="desc">${esc(ago(a.last_seen))}</td>
+        <td style="white-space:normal"><div class="chips" style="margin:0" data-tip="${listed ? 'in this app’s tool list' : 'its group is not adaptive: what it would list'}">${chips}</div></td></tr>`;
+    }).join('') || '<tr><td colspan="6" class="empty">no calls in this window</td></tr>') + '</tbody>';
+}
+function drawStatTools() {
+  if (!ST) return;
+  const ws = words($('st-filter').value);
+  const rows = ST.tools.filter(t => matches(`${t.upstream} ${t.tool} ${t.name || ''}`.toLowerCase(), ws));
+  const max = Math.max(1, ...ST.tools.map(t => t.calls));
+  $('st-tools').innerHTML = '<thead><tr><th>tool</th><th>server</th><th class="num">calls</th><th class="num">failed</th>'
+    + '<th class="num">typical</th><th class="num">slowest 5%</th><th>last call</th></tr></thead><tbody>'
+    + (rows.map(t => `<tr><td><code class="tname">${tname(t)}</code><div class="bar" style="width:${Math.max(2, 100 * t.calls / max)}%"></div></td>
+      <td>${esc(t.upstream)}</td><td class="num">${t.calls.toLocaleString()}</td>
+      <td class="num">${t.failed ? pctOf(t.failed, t.calls) + '%' : '—'}</td><td class="num">${ms(t.p50_ms)}</td>
+      <td class="num">${ms(t.p95_ms)}</td><td class="desc">${esc(ago(t.last_seen))}</td></tr>`).join('')
+      || '<tr><td colspan="7" class="empty">no tool matches</td></tr>') + '</tbody>';
+}
+
+/* ---- writes: every one re-renders from the server, not from local state -- */
+const saveGroup = act(async (name, body) => { await send('/groups/' + encodeURIComponent(name), 'PATCH', body); render(); });
+const setAutoServers = (name, on) => saveGroup(name, { servers: on ? null : UPS.map(u => u.name) });
+const setGroupServer = (name, server, on) => {
+  const servers = GROUPS.find(x => x.name === name).servers.filter(s => s !== server);
+  if (on) servers.push(server);
+  return saveGroup(name, { servers });
+};
+const setDefault = act(async (name, tool, on) => {
+  const g = GROUPS.find(x => x.name === name);
+  const defaults = g.defaults.filter(d => d !== tool);
+  if (on) defaults.push(tool);
+  await saveGroup(name, { defaults });
+});
+const addGroup = act(async () => {
+  const name = $('g-name').value.trim(); if (!name) return;
+  await send('/groups', 'POST', { name, mode: 'hybrid' });
+  $('g-name').value = ''; OPEN.add(name); say('added ' + name); render();
+});
+function renameGroup(name) {
+  openModal('Rename ' + name, [{ id: 'name', label: 'name', value: name }], async v => {
+    await send('/groups/' + encodeURIComponent(name), 'PATCH', { name: v.name });
+    // the page's own memory of the group (its open picker, its filter) is by name too
+    if (OPEN.delete(name)) OPEN.add(v.name);
+    if (name in PICK) { PICK[v.name] = PICK[name]; delete PICK[name]; }
+    say('renamed'); render();
+  });
+}
+const removeGroup = act(async name => {
+  if (!await ask(`Delete the group “${name}”?`, 'Its keys go with it — the apps that use them stop connecting.',
+                 'Delete group', 'crit')) return;
+  await send('/groups/' + encodeURIComponent(name), 'DELETE');
+  say('deleted ' + name); render();
+});
+
+// One editor for a whole server: name, endpoint, auth headers and description together.
+// Headers are written "Name=Value" one per line — the form curl users already know — and
+// travel to the API as an object.
+const headersToText = h => Object.entries(h || {}).map(([k, v]) => `${k}=${v}`).join('\n');
+function headersToObj(text) {
+  const out = {};
+  for (const line of (text || '').split('\n')) {
+    if (!line.trim()) continue;
+    const i = line.indexOf('=');
+    if (i < 1) throw new Error('headers are one per line, Name=Value — e.g. Authorization=Bearer <token>');
+    out[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+  }
+  return out;
+}
+// Testing only makes sense once there is a real endpoint to point at
+const syncTestBtn = () => { const b = $('mtest'); if (b) b.disabled = !/^https?:\/\//i.test($('f-url').value.trim()); };
+const testConnection = async () => {
+  const out = $('tcon');
+  out.textContent = 'testing…';
+  try {
+    const r = await send('/test-connection', 'POST',
+      { url: $('f-url').value.trim(), headers: headersToObj($('f-headers').value) });
+    out.textContent = r.ok ? `✓ connected — ${r.tools} tools${r.server ? ' · ' + r.server : ''}` : '✕ ' + r.error;
+  } catch (e) { out.textContent = '✕ ' + e.message; }
+};
+
+function editUpstream(name) {
+  const u = name ? UPS.find(x => x.name === name) : null;
+  openModal(name ? 'Edit ' + name : 'Add MCP server',
+    [{ id: 'name', label: 'name', value: u?.name || '' },
+     { id: 'url', label: 'endpoint (streamable HTTP)', value: u?.url || '', oninput: 'syncTestBtn()' },
+     { id: 'headers', label: 'auth headers (optional, one per line)', area: true,
+       value: headersToText(u?.headers), placeholder: 'Authorization=Bearer <your-token>',
+       after: `<div class="row" style="justify-content:flex-end">
+         <button type="button" id="mtest" onclick="testConnection()">Test connection</button>
+         <span id="tcon" class="hint"></span></div>` },
+     { id: 'description', label: 'what the model is told this server is for (blank = the server’s own words)',
+       value: u?.overridden ? u.description : '', area: true }],
+    async v => {
+      if (!v.name || !v.url) throw new Error('name and endpoint are required');
+      const headers = headersToObj(v.headers);   // refused here, before anything is saved
+      say('connecting…');
+      const body = { name: v.name, url: v.url, description: v.description || null, headers };
+      const r = name ? await send('/upstreams/' + encodeURIComponent(name), 'PATCH', body)
+                     : await send('/upstreams', 'POST', body);
+      if (r.status === 'connected') say(`${r.name}: connected · ${r.tools} tools`);
+      else say(`${r.name}: ${r.status}${r.error ? ' — ' + r.error : ''}. The manager keeps retrying.`, r.status === 'down');
+      render();
+    }, name ? 'Save' : 'Add');
+  syncTestBtn();   // editing a server that already has an endpoint: the button starts live
+}
+// A fresh start with one server: the manager's own session and every app's session on it. The
+// apps' sessions hold what the server kept for them, so with any open, it asks first.
+const reconnectServer = act(async (name, btn) => {
+  const u = UPS.find(x => x.name === name), n = u?.sessions || 0;
+  if (n && !await ask(`Reconnect ${name}?`, `A fresh connection is made: its headers are sent again and its tools are `
+      + `listed again.\n${n} app session${n > 1 ? 's' : ''} on it will start over on the next call — anything ${name} kept `
+      + 'for them (open tabs, logins, jobs) is gone.', 'Reconnect')) return;
+  btn.disabled = true;
+  btn.classList.add('spin');
+  try {
+    const r = await send('/upstreams/' + encodeURIComponent(name) + '/reconnect', 'POST');
+    say(r.status === 'connected' ? `${name}: reconnected · ${r.tools} tools`
+        : `${name}: ${(STATE[r.status]?.[2] || r.status).toLowerCase()}${r.error ? ' — ' + r.error : ''}. The manager keeps retrying.`,
+        r.status === 'down');
+  } finally { render(); }
+});
+const saveServer = act(async (name, body) => { say('saving…'); await send('/upstreams/' + encodeURIComponent(name), 'PATCH', body); render(); });
+// Sharing breaks the isolation every other server keeps, so turning it on asks first. Either way
+// the server's open sessions close, and each next call opens one under the new rule.
+const toggleShared = act(async (name, el) => {
+  if (el.checked && !await ask(`Share ${name} per group?`, `Every app in the same group will use one session on ${name} `
+      + 'and see the same state there: the same memory, the same browser tabs and logins.\nApps in other groups stay separate.',
+      'Share per group')) {
+    el.checked = false;
+    return;
+  }
+  await send('/upstreams/' + encodeURIComponent(name), 'PATCH', { shared: el.checked });
+  say(el.checked ? `${name}: shared per group — apps in one group now use one session` : `${name}: one session per app again`);
+  render();
+});
+const removeUpstream = act(async name => {
+  if (!await ask(`Remove ${name}?`, 'Its tools disappear for every group, and apps using it lose them at once.',
+                 'Remove server', 'crit')) return;
+  await send('/upstreams/' + encodeURIComponent(name), 'DELETE');
+  say('removed'); render();
+});
+const toolOf = (upstream, tool) => TOOLS.find(x => x.upstream === upstream && x.tool === tool);
+function viewTool(upstream, tool) {
+  const t = toolOf(upstream, tool);
+  const block = (label, text) => `<div class="field"><span>${esc(label)}</span><div class="fulltext">${esc(text) || '—'}</div></div>`;
+  showInfo(upstream + ' / ' + tool, block(t.overridden ? 'description — yours' : 'description', t.description)
+    + (t.overridden ? block('the server’s own', t.server_says) : '') + block('arguments', t.arguments));
+}
+// The box grows to the text, up to what the dialog can hold around it, so a description shows
+// whole whenever the window has the room
+const fitBox = box => { box.style.height = 'auto';
+  box.style.height = Math.max(120, Math.min(box.scrollHeight + 4, innerHeight - 240)) + 'px'; };
+// Which words are in the box decides what Revert can do and what the line beside it says
+function syncRevert(upstream, tool) {
+  const t = toolOf(upstream, tool);
+  const isDefault = $('f-description').value.trim() === t.server_says.trim();
+  $('mrevert').disabled = isDefault;
+  $('mstate').textContent = !isDefault ? 'Your version. Revert brings back the server’s own.'
+    : t.overridden ? 'The server’s own description. Save to go back to it.' : 'This is the server’s own description.';
+}
+function revertTool(upstream, tool) {
+  const box = $('f-description');
+  box.value = toolOf(upstream, tool).server_says;
+  fitBox(box); syncRevert(upstream, tool);
+}
+function editTool(upstream, tool) {
+  const t = toolOf(upstream, tool), args = `${js(upstream)}, ${js(tool)}`;
+  openModal(upstream + ' / ' + tool,
+    [{ id: 'description', label: 'description — used for search and shown to the model', value: t.description, area: true,
+       oninput: `fitBox(this); syncRevert(${args})`,
+       after: `<div class="revertline"><span class="hint" id="mstate"></span>
+         <button type="button" id="mrevert" onclick="revertTool(${args})">Revert to default</button></div>` }],
+    async v => {
+      // the server's own words are no edit: nothing is stored, and a later server update shows through
+      const yours = v.description && v.description !== t.server_says.trim();
+      await send('/overrides', 'POST', { upstream, tool, description: yours ? v.description : null });
+      say('saved'); render();
+    });
+  fitBox($('f-description')); syncRevert(upstream, tool);
+}
+
+// The secret exists only in the response that mints it, so every path that mints one
+// (generate, re-issue) shows the same copy-now modal.
+function showKeyModal(label, key) {
+  // "type" is what Claude Code needs to read a URL entry as HTTP; other clients ignore it
+  const config = JSON.stringify({ mcpServers: { 'mcp-manager': { type: 'http', url: mcpUrl(),
+                                  headers: { Authorization: 'Bearer ' + key } } } }, null, 2);
+  openModal('Key for ' + label + ' — copy it now',
+    [{ id: 'key', label: 'stored hashed: this is the only time it is shown', value: key, readonly: true },
+     { id: 'config', label: 'for an app that takes an mcp.json', value: config, area: true, readonly: true }],
+    async () => { await navigator.clipboard?.writeText(key); say('copied'); }, 'Copy key');
+  $('f-config').style.minHeight = '14rem';   // the whole snippet in view, not a scrollbox
+}
+const addKey = act(async () => {
+  const r = await send('/keys', 'POST', { label: $('k-label').value.trim() || null, group: $('k-group').value });
+  $('k-label').value = '';
+  showKeyModal(r.label, r.key);
+  render();
+});
+const moveKey = act(async (id, group) => { await send('/keys/' + id, 'PATCH', { group }); say('moved'); render(); });
+function renameKey(id) {
+  const k = KEYS.find(x => x.id === id);
+  openModal('Rename ' + k.label, [{ id: 'label', label: 'new label', value: k.label }], async v => {
+    if (!v.label) throw new Error('a label is required');
+    await send('/keys/' + id, 'PATCH', { label: v.label });
+    say('renamed'); render();
+  });
+}
+const revokeKey = act(async id => {
+  const k = KEYS.find(x => x.id === id);
+  if (!await ask(`Revoke “${k?.label || 'this key'}”?`, 'Its app stops connecting immediately. You can re-issue it later.',
+                 'Revoke key', 'crit')) return;
+  await send('/keys/' + id + '/revoke', 'POST'); render();
+});
+const reissueKey = act(async id => {
+  const k = KEYS.find(x => x.id === id);
+  if (!await ask(`Re-issue “${k?.label || 'this key'}”?`, 'A new secret is made for it. The old one stops working at once — the app needs the new one.',
+                 'Re-issue')) return;
+  const r = await send('/keys/' + id + '/reissue', 'POST');
+  showKeyModal(r.label, r.key);
+  render();
+});
+const deleteKey = act(async id => {
+  const k = KEYS.find(x => x.id === id);
+  if (!await ask(`Delete “${k?.label || 'this key'}” for good?`, 'Re-issuing it is no longer possible after this.',
+                 'Delete key', 'crit')) return;
+  await send('/keys/' + id, 'DELETE'); render();
+});
+
+/* ---- settings: where the page talks to which manager ---------------------- */
+// The connection fields live behind the gear, not in the bar: they are set once and then
+// never touched again, and the bar is the model's dashboard, not a config form. A first
+// visit with no token opens this modal by itself.
+function settings() {
+  openModal('Connection', [
+    { id: 'server', label: 'manager URL (blank = this page’s origin)', value: stored('localStorage', 'server'),
+      placeholder: fallback() + ' (default)' },
+    { id: 'token', label: 'admin token — MCPM_ADMIN_TOKEN, not an app key', type: 'password',
+      value: stored('localStorage', 'token'), placeholder: 'mcpm_admin_…' },
+    { id: 'auto', label: 'auto-refresh', value: stored('localStorage', 'auto') || '0',
+      options: [['0', 'off'], ['10', 'every 10 s'], ['30', 'every 30 s'], ['60', 'every 60 s']] },
+  ], async v => {
+    store('localStorage', 'server', v.server.trim().replace(/\/+$/, ''));
+    store('localStorage', 'token', v.token);
+    store('localStorage', 'auto', v.auto);
+    arm(); render();
+  }, 'Connect');
+}
+
+/* ---- search: the top bar drives it ----------------------------------------- */
+let PAGE = 1, searchTimer = null;
+let SEARCHING = false;   // the view only draws after a search was asked for, so opening it cold is not an empty table
+// the same search the model runs, showing what it gets: which MCP, which tool, what it does,
+// its arguments, how close the match is -- plus who wrote that description.
+async function runSearch() {
+  try {
+    SEARCHING = true;
+    const f = await send('/search', 'POST', { query: $('gsearch').value, page: PAGE, page_size: +$('psize').value });
+    PAGE = f.page;
+    // name the engine, so a lexical answer is never mistaken for a semantic one
+    $('engine').textContent = (f.mode === 'semantic' ? 'semantic · cosine' : f.mode + ' · token overlap')
+      + ' · ' + f.total + ' matches at or above ' + FLOOR[f.mode] + (f.mode === 'semantic' ? ', within 0.12 of the best' : '');
+    $('results').innerHTML = (f.results.length ? `<table><thead><tr><th>MCP</th><th>tool</th>`
+      + '<th>what the tool does</th><th>similarity</th></tr></thead><tbody>' + f.results.map(r => `
+      <tr><td><b>${esc(r.mcp)}</b>${r.available ? '' : '<br>' + pill('down')}</td><td><code class="tname">${esc(r.exposed)}</code><br>
+          <span class="badge">${esc(r.source)}</span></td>
+        <td class="desc">${short(r.description, 300)}<code class="args">${short(r.arguments, 240)}</code></td>
+        <td class="num">${r.score.toFixed(3)}</td></tr>`).join('')
+      + '</tbody></table>' : '<div class="empty">nothing at or above ' + FLOOR[f.mode] + ' for that</div>')
+      + (f.pages > 1 ? `<div class="row" style="margin-top:.5rem;justify-content:center">
+          <button ${f.page <= 1 ? 'disabled' : ''} onclick="PAGE = ${f.page - 1}; runSearch()">← Previous</button>
+          <span class="badge">page ${f.page} of ${f.pages}</span>
+          <button ${f.page >= f.pages ? 'disabled' : ''} onclick="PAGE = ${f.page + 1}; runSearch()">Next →</button>
+        </div>` : '');
+  } catch (e) { fail(e); }
+}
+// typing is the search: one deliberate pause and the view switches. Enter goes at once.
+$('gsearch').oninput = () => {
+  clearTimeout(searchTimer);
+  if (!$('gsearch').value.trim()) return;
+  searchTimer = setTimeout(() => { PAGE = 1; showView('search'); runSearch(); }, 500);
+};
+$('gsearch').onkeydown = e => {
+  if (e.key === 'Enter') { clearTimeout(searchTimer); $('suggest').hidden = true; PAGE = 1; showView('search'); runSearch(); }
+  if (e.key === 'Escape') $('suggest').hidden = true;
+};
+// The helper: an empty, focused box shows what kind of query works, and each example runs.
+const EXAMPLES = ['browse the web', 'take a screenshot of a page', 'search the internet',
+                  'download a YouTube video as MP3', 'generate an image'];
+$('suggest').insertAdjacentHTML('beforeend', EXAMPLES.map(q => `<button type="button" data-q="${esc(q)}">
+  <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+  <circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>${esc(q)}</button>`).join(''));
+const helper = () => { $('suggest').hidden = !!$('gsearch').value.trim(); };
+$('gsearch').addEventListener('focus', helper);
+$('gsearch').addEventListener('input', helper);
+$('gsearch').addEventListener('blur', () => setTimeout(() => {
+  if (!$('suggest').contains(document.activeElement)) $('suggest').hidden = true; }, 120));
+for (const b of $('suggest').querySelectorAll('button')) {
+  b.onmousedown = e => e.preventDefault();          // keep focus in the box: blur would hide it first
+  b.onclick = () => { $('gsearch').value = b.dataset.q; $('suggest').hidden = true; clearTimeout(searchTimer);
+                      PAGE = 1; showView('search'); runSearch(); };
+}
+
+/* ---- hover tooltip for the activity rows ----------------------------------- */
+const tip = $('tip');
+document.addEventListener('mousemove', e => {
+  const row = e.target.closest?.('[data-tip]');
+  if (!row) { tip.style.display = 'none'; return; }
+  tip.textContent = row.dataset.tip;
+  tip.style.display = 'block';
+  tip.style.left = Math.min(e.clientX + 14, innerWidth - tip.offsetWidth - 8) + 'px';
+  tip.style.top = (e.clientY + 16 + tip.offsetHeight > innerHeight - 8 ? e.clientY - tip.offsetHeight - 12 : e.clientY + 16) + 'px';
+});
+
+// Auto-refresh skips a tick while you are in the middle of something: a dialog, a picker filter,
+// or a field being typed in -- a refresh rebuilds those lists under the cursor.
+let timer = null;
+function arm() {
+  clearInterval(timer);
+  const s = +stored('localStorage', 'auto');
+  if (s) timer = setInterval(() => {
+    if (document.hidden || $('modal').open
+        || document.activeElement?.closest?.('.picker, .views input, .views select, .views textarea')) return;
+    render();
+  }, s * 1000);
+}
+
+/* ---- the app's icon (assets/icon.svg): the tab icon and the mark beside the name ----------- */
+// Made with the image generator behind this very manager, vectorized, clipped to its tile. One
+// copy, used twice as an image -- an inline SVG's ids would be global to the page.
+const ICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024"><clipPath id="t"><rect width="1024" height="1024" rx="160"/></clipPath><g clip-path="url(#t)"><g stroke-width="1" stroke-linejoin="round">
+<path d="M0 0 C338 0 676 0 1024 0 C1024 338 1024 676 1024 1024 C686 1024 348 1024 0 1024 C0 686 0 348 0 0 Z " fill="#FDEFCB" stroke="#FDEFCB" transform="translate(0,0)"/>
+<path d="M0 0 C1 0 1 1 2 1 C12 9 23 18 32 26 C34 28 36 30 39 32 C44 36 48 41 53 46 C55 47 56 49 58 50 C63 56 68 61 73 67 C74 68 74 68 75 69 C136 141 173 232 178 393 C173 449 156 504 130 555 C129 556 129 558 128 559 C122 570 116 580 109 591 C108 592 107 594 106 596 C106 596 105 597 105 598 C104 599 104 600 103 600 C103 601 103 601 102 602 C101 602 101 602 100 602 C100 603 100 603 99 604 C98 607 96 610 94 613 C93 614 93 614 92 615 C85 626 76 636 67 646 C66 647 64 649 63 650 C58 656 52 662 47 667 C46 668 45 669 45 669 C40 674 36 678 32 681 C30 683 27 685 25 687 C8 703 -11 716 -30 728 C-31 728 -31 729 -32 729 C-89 765 -160 793 -228 793 C-230 791 -229 786 -229 783 C-229 782 -229 781 -229 780 C-229 777 -229 774 -229 771 C-229 768 -229 766 -229 764 C-229 756 -229 749 -229 741 C-229 738 -229 736 -229 733 C-229 723 -229 712 -229 701 C-229 698 -229 695 -229 693 C-229 692 -229 691 -229 690 C-229 679 -229 668 -229 657 C-229 645 -230 634 -230 622 C-230 616 -230 609 -230 603 C-230 596 -230 590 -230 584 C-230 582 -230 580 -230 577 C-230 574 -230 571 -230 568 C-230 567 -230 567 -230 566 C-230 560 -230 560 -227 557 C-226 556 -225 556 -224 555 C-220 551 -218 550 -218 544 C-218 543 -218 542 -218 541 C-218 540 -218 540 -218 537 C-218 536 -218 536 -218 535 C-218 533 -218 530 -218 528 C-218 522 -218 516 -218 510 C-217 506 -217 502 -217 498 C-217 497 -217 496 -217 494 C-217 492 -217 490 -217 488 C-217 487 -217 486 -217 485 C-217 482 -217 482 -215 480 C-213 479 -210 479 -208 478 C-175 470 -148 450 -130 421 C-120 403 -114 383 -113 363 C-113 362 -113 361 -113 360 C-113 352 -113 344 -113 336 C-113 333 -113 330 -113 328 C-113 320 -113 312 -113 305 C-113 300 -113 295 -113 290 C-113 289 -113 287 -113 285 C-113 283 -113 280 -113 278 C-113 277 -113 276 -113 275 C-113 270 -113 270 -111 268 C-109 267 -108 267 -106 267 C-100 265 -97 262 -93 256 C-90 251 -90 245 -89 238 C-89 237 -89 237 -89 236 C-88 228 -91 222 -96 215 C-100 210 -105 208 -112 208 C-113 208 -114 208 -115 208 C-116 208 -117 208 -118 208 C-120 208 -121 208 -122 208 C-124 208 -126 208 -128 208 C-132 208 -136 208 -140 207 C-145 207 -150 207 -154 207 C-156 207 -157 207 -158 207 C-159 207 -160 207 -162 207 C-163 207 -164 207 -165 207 C-167 207 -167 207 -168 206 C-168 205 -168 203 -168 202 C-168 201 -168 201 -168 199 C-168 198 -168 197 -168 196 C-168 195 -168 194 -168 193 C-168 190 -168 188 -168 186 C-168 182 -168 178 -168 175 C-168 164 -168 154 -168 144 C-168 137 -168 131 -168 125 C-168 122 -168 120 -168 117 C-168 114 -168 110 -168 107 C-168 106 -168 105 -168 104 C-169 97 -170 90 -175 85 C-176 84 -176 84 -177 84 C-178 83 -178 83 -179 82 C-184 79 -190 79 -195 80 C-200 82 -204 85 -207 90 C-210 96 -211 101 -211 108 C-211 109 -211 110 -211 111 C-211 115 -211 118 -211 122 C-211 124 -211 127 -211 129 C-211 135 -211 142 -211 148 C-211 158 -211 169 -211 179 C-211 182 -211 186 -211 190 C-211 192 -211 194 -211 196 C-211 197 -211 198 -211 199 C-211 200 -211 201 -211 202 C-211 203 -211 203 -211 204 C-211 206 -211 206 -212 207 C-215 207 -217 207 -220 207 C-220 207 -221 207 -222 207 C-225 207 -227 207 -230 207 C-232 207 -234 207 -236 207 C-239 207 -243 207 -247 207 C-252 207 -257 207 -262 207 C-266 207 -269 207 -273 207 C-275 207 -277 207 -279 207 C-281 207 -284 207 -286 207 C-287 207 -288 207 -289 207 C-294 207 -294 207 -295 206 C-295 205 -295 203 -295 202 C-295 201 -295 200 -295 199 C-295 198 -295 197 -295 196 C-295 195 -295 194 -295 193 C-295 191 -295 189 -295 187 C-295 183 -295 179 -295 176 C-295 166 -295 156 -295 146 C-295 140 -295 134 -295 128 C-295 125 -295 123 -295 121 C-295 117 -295 114 -295 111 C-295 110 -295 109 -295 108 C-295 100 -295 91 -301 85 C-307 81 -312 79 -319 80 C-325 81 -330 84 -333 89 C-336 95 -337 100 -337 107 C-337 108 -337 109 -337 110 C-337 114 -337 117 -337 121 C-337 123 -337 126 -337 128 C-337 135 -337 141 -337 148 C-337 158 -337 168 -337 179 C-337 182 -337 186 -337 189 C-337 192 -337 194 -337 196 C-337 197 -337 198 -337 199 C-337 200 -337 201 -337 202 C-337 203 -337 203 -337 204 C-337 206 -337 206 -338 207 C-340 207 -342 207 -343 207 C-344 207 -344 207 -347 207 C-348 207 -350 207 -351 207 C-353 207 -355 207 -357 207 C-362 207 -367 207 -372 207 C-375 207 -377 207 -380 207 C-383 208 -385 208 -388 208 C-396 208 -402 208 -409 213 C-416 222 -417 228 -417 239 C-417 240 -417 240 -417 242 C-416 250 -415 256 -409 262 C-405 265 -401 267 -396 268 C-394 269 -394 269 -393 270 C-393 273 -393 275 -393 278 C-393 278 -393 279 -393 280 C-393 282 -393 283 -393 285 C-393 288 -393 291 -393 293 C-393 300 -393 307 -393 314 C-393 320 -393 325 -393 331 C-393 334 -393 336 -393 339 C-393 348 -393 356 -393 364 C-393 365 -393 365 -392 367 C-392 373 -391 379 -390 385 C-390 386 -389 387 -389 388 C-382 419 -362 447 -334 463 C-323 470 -310 475 -297 479 C-290 481 -290 481 -289 482 C-289 484 -289 486 -289 488 C-289 489 -289 489 -289 492 C-289 493 -289 493 -289 494 C-289 496 -289 499 -289 501 C-289 507 -289 513 -289 519 C-289 523 -289 527 -288 531 C-288 532 -288 534 -288 535 C-288 537 -288 539 -288 541 C-288 542 -288 542 -288 545 C-288 549 -286 552 -283 555 C-282 555 -281 556 -280 556 C-278 557 -278 557 -276 560 C-276 563 -276 565 -276 568 C-276 569 -276 570 -276 571 C-276 573 -276 576 -276 579 C-276 581 -276 583 -276 585 C-276 589 -276 593 -276 597 C-276 603 -276 608 -276 614 C-276 625 -276 635 -276 646 C-276 651 -276 656 -276 661 C-276 671 -276 681 -276 690 C-277 701 -277 713 -277 724 C-277 746 -277 769 -277 792 C-279 792 -282 792 -284 792 C-285 792 -286 792 -288 792 C-291 792 -295 792 -298 791 C-299 791 -301 791 -302 791 C-303 791 -304 791 -306 790 C-306 790 -307 790 -308 790 C-322 788 -336 785 -350 782 C-350 782 -350 782 -353 781 C-383 774 -412 762 -440 748 C-442 747 -445 746 -447 744 C-459 738 -470 732 -481 725 C-482 724 -483 724 -484 723 C-497 714 -510 705 -522 695 C-523 694 -524 693 -525 692 C-537 682 -549 671 -560 660 C-561 659 -561 659 -562 658 C-568 652 -574 646 -579 640 C-580 639 -581 638 -582 637 C-590 627 -598 617 -605 607 C-606 606 -606 606 -606 605 C-636 564 -658 516 -671 467 C-671 466 -671 465 -672 464 C-695 375 -690 279 -647 173 C-647 172 -646 171 -646 170 C-630 135 -609 102 -584 73 C-582 71 -581 70 -580 69 C-574 61 -567 54 -560 47 C-558 45 -556 43 -554 41 C-548 35 -542 29 -535 23 C-534 22 -533 21 -532 20 C-523 12 -513 5 -503 -2 C-502 -2 -502 -3 -501 -3 C-492 -10 -482 -16 -472 -22 C-471 -22 -469 -23 -468 -24 C-446 -37 -423 -47 -399 -56 C-398 -56 -397 -57 -396 -57 C-304 -91 -192 -89 0 0 Z " fill="#C84D00" stroke="#C84D00" transform="translate(765,155)"/>
+<path d="M0 0 C0 0 0 0 2 1 C3 1 4 1 5 1 C5 1 5 1 7 2 C12 4 12 4 14 5 C14 7 14 9 14 11 C14 12 14 12 14 15 C14 16 14 16 14 17 C14 19 14 21 14 24 C14 30 14 36 14 42 C14 46 14 50 14 54 C14 55 14 57 14 58 C14 60 14 62 14 64 C14 65 14 67 14 68 C15 72 17 75 20 78 C20 78 20 78 22 79 C25 80 25 80 27 83 C27 86 27 88 27 91 C27 92 27 93 27 93 C27 96 27 99 27 102 C27 104 27 106 27 108 C27 112 27 116 27 120 C27 126 27 131 27 137 C27 147 26 158 26 168 C26 174 26 179 26 184 C26 194 26 203 26 213 C26 224 26 235 26 246 C26 269 26 292 26 315 C23 315 21 315 19 315 C18 315 18 315 15 315 C12 315 8 315 4 314 C3 314 2 314 1 314 C0 314 -2 313 -3 313 C-4 313 -4 313 -5 313 C-19 311 -33 308 -47 305 C-48 305 -49 304 -50 304 C-80 297 -110 285 -137 271 C-140 270 -142 268 -144 267 C-156 261 -167 255 -178 248 C-179 247 -180 247 -182 246 C-195 237 -207 228 -219 218 C-220 217 -221 216 -222 215 C-235 205 -246 194 -258 183 C-258 182 -259 182 -259 181 C-265 175 -271 169 -276 163 C-277 162 -278 161 -279 160 C-287 150 -295 140 -302 130 C-303 129 -303 128 -304 128 C-329 92 -348 53 -362 12 C-362 11 -362 11 -363 8 C-363 8 -364 7 -364 6 C-364 5 -365 4 -365 3 C-365 1 -365 1 -364 -1 C-320 -1 -275 -1 -230 -2 C-225 -2 -219 -2 -214 -2 C-213 -2 -213 -2 -211 -2 C-194 -2 -177 -2 -160 -2 C-142 -2 -125 -2 -107 -2 C-96 -2 -85 -2 -75 -2 C-67 -2 -60 -2 -52 -2 C-48 -2 -44 -2 -40 -2 C-36 -2 -32 -2 -28 -2 C-26 -2 -25 -2 -24 -2 C-22 -2 -20 -2 -18 -2 C-17 -2 -17 -2 -14 -2 C-10 -2 -5 -1 0 0 Z " fill="#81500D" stroke="#81500D" transform="translate(462,632)"/>
+<path d="M0 0 C1 0 3 0 4 0 C5 0 7 0 8 0 C9 0 11 0 12 0 C16 0 21 0 25 0 C29 0 33 0 38 0 C45 0 53 0 61 0 C72 0 83 0 94 0 C112 0 129 0 147 0 C165 1 182 1 199 1 C200 1 200 1 202 1 C208 1 213 1 219 1 C263 1 308 1 352 1 C352 3 351 4 351 6 C351 7 351 8 351 9 C350 12 349 16 347 19 C347 20 347 20 347 21 C346 23 345 26 344 28 C344 29 343 30 343 30 C339 42 334 54 328 66 C328 67 327 67 327 68 C325 72 323 76 321 80 C320 81 320 83 319 84 C313 95 307 106 301 116 C299 117 298 119 297 121 C297 121 296 122 296 123 C295 124 295 125 294 125 C294 126 293 127 293 127 C292 127 292 127 291 127 C291 128 291 128 290 129 C289 133 287 135 285 138 C284 139 284 140 283 140 C276 151 267 161 258 171 C257 172 255 174 254 175 C249 181 244 187 238 192 C237 193 236 194 236 195 C232 199 227 203 223 207 C221 208 219 210 216 212 C199 228 180 241 161 253 C160 253 160 254 159 254 C102 290 31 318 -37 318 C-39 316 -38 311 -38 308 C-38 307 -38 306 -38 305 C-38 302 -38 299 -38 296 C-38 293 -38 291 -38 289 C-38 281 -38 274 -38 266 C-38 264 -38 261 -38 258 C-38 248 -38 237 -38 226 C-38 223 -38 220 -38 218 C-38 217 -38 216 -38 216 C-38 204 -38 193 -38 182 C-38 170 -38 159 -38 147 C-38 141 -38 134 -39 128 C-39 122 -39 115 -39 109 C-39 107 -39 105 -39 103 C-39 100 -39 96 -39 93 C-39 93 -39 92 -39 91 C-39 85 -39 85 -36 82 C-35 81 -35 81 -33 80 C-29 77 -27 75 -27 69 C-27 68 -27 67 -27 66 C-27 65 -27 63 -27 62 C-27 61 -27 61 -27 60 C-27 58 -27 55 -27 53 C-27 47 -27 41 -26 35 C-26 31 -26 27 -26 24 C-26 22 -26 21 -26 19 C-26 17 -26 15 -26 13 C-26 12 -26 11 -26 10 C-26 7 -26 7 -24 5 C-21 4 -19 4 -17 3 C-4 0 -4 0 0 0 Z " fill="#81500D" stroke="#81500D" transform="translate(574,630)"/>
+<path d="M0 0 C41 0 41 0 251 1 C251 4 251 8 251 11 C251 20 252 28 259 34 C263 37 267 39 272 40 C274 41 274 41 275 42 C275 45 275 47 275 50 C275 50 275 51 275 52 C275 54 275 55 275 57 C275 60 275 63 275 65 C275 72 275 79 275 86 C275 92 275 97 275 103 C275 106 275 108 275 111 C275 120 275 128 275 136 C275 137 275 137 276 139 C276 145 277 151 278 157 C278 158 279 159 279 160 C286 191 307 219 334 235 C341 239 348 243 355 246 C355 247 354 247 354 248 C237 248 120 248 0 248 C-3 238 -6 229 -8 219 C-8 219 -8 219 -9 216 C-24 144 -19 71 0 0 Z " fill="#BF7900" stroke="#BF7900" transform="translate(97,383)"/>
+<path d="M0 0 C1 0 2 0 2 0 C3 0 3 0 5 0 C6 0 7 0 8 0 C8 0 8 0 11 0 C14 0 18 0 21 0 C24 0 26 0 29 0 C34 0 39 0 44 0 C52 0 60 0 67 0 C80 0 92 0 105 0 C117 1 129 1 141 1 C141 1 141 1 143 1 C147 1 151 1 154 1 C185 1 216 1 247 1 C248 2 248 4 249 5 C249 5 249 5 250 7 C275 77 274 177 248 247 C247 248 247 248 245 248 C244 248 244 248 242 248 C240 248 239 248 238 248 C236 248 235 248 234 248 C232 248 231 248 229 248 C225 248 221 248 217 248 C213 248 209 248 204 248 C197 248 189 248 182 248 C171 248 160 248 149 248 C131 248 114 248 96 248 C79 248 62 248 44 248 C43 248 42 248 41 248 C36 248 31 248 25 248 C-19 248 -63 248 -107 248 C-107 247 -107 247 -107 246 C-106 246 -106 246 -105 245 C-71 229 -47 206 -34 170 C-30 158 -28 147 -27 135 C-27 134 -27 133 -27 132 C-27 124 -27 116 -27 108 C-27 105 -27 102 -27 100 C-27 92 -27 84 -27 77 C-27 72 -27 67 -27 63 C-27 61 -27 59 -27 57 C-27 55 -27 52 -27 50 C-27 49 -27 48 -27 47 C-27 42 -27 42 -25 40 C-23 40 -22 39 -20 39 C-13 37 -10 34 -7 29 C-5 24 -4 21 -3 16 C-3 15 -3 14 -3 13 C-3 11 -3 10 -3 8 C-3 7 -3 6 -3 5 C-3 4 -3 4 -3 3 C-3 1 -2 0 0 0 Z " fill="#BF7900" stroke="#BF7900" transform="translate(679,383)"/>
+<path d="M0 0 C4 0 7 -0 11 -0 C18 0 25 0 32 -0 C37 -0 43 -0 49 -0 C50 -0 50 -0 51 -0 C53 -0 54 -0 56 -0 C72 0 87 -0 102 0 C116 0 129 0 142 0 C157 -0 173 0 188 -0 C190 -0 191 -0 193 -0 C194 -0 195 -0 195 -0 C201 -0 207 -0 213 0 C219 0 226 0 233 -0 C237 0 240 0 244 -0 C248 0 251 -0 255 0 C256 0 256 0 259 -0 C260 -0 261 0 262 0 C262 0 263 0 264 0 C266 0 266 0 268 1 C268 64 268 127 268 191 C253 191 253 191 247 190 C247 190 247 190 244 190 C242 190 241 190 240 190 C239 189 238 189 238 189 C223 187 209 184 195 181 C195 181 194 181 193 181 C162 174 133 162 105 147 C103 146 101 145 98 144 C87 138 75 131 64 124 C63 123 62 123 61 122 C48 114 35 104 23 94 C22 93 21 92 20 92 C8 81 -4 70 -15 59 C-16 58 -16 58 -17 57 C-22 51 -28 45 -34 39 C-34 38 -35 37 -36 36 C-42 30 -47 23 -53 16 C-53 15 -53 15 -55 13 C-55 12 -56 11 -57 10 C-57 10 -58 9 -58 8 C-60 6 -61 4 -62 2 C-60 0 -57 1 -55 1 C-53 1 -52 1 -51 1 C-49 1 -48 1 -46 1 C-46 1 -46 1 -44 1 C-30 0 -15 0 0 0 Z " fill="#472A0F" stroke="#472A0F" transform="translate(220,756)"/>
+<path d="M0 0 C1 -0 2 0 3 0 C4 0 6 -0 7 -0 C8 -0 9 -0 11 0 C14 0 18 0 21 -0 C25 -0 29 0 33 0 C40 0 47 0 55 0 C61 0 67 0 73 0 C73 0 73 0 76 0 C77 0 79 0 81 0 C97 0 114 0 130 -0 C144 0 158 0 172 -0 C188 0 205 0 221 0 C223 0 224 0 226 0 C227 0 228 0 229 0 C235 0 241 0 247 0 C254 0 261 0 269 0 C273 -0 276 -0 280 0 C284 0 288 0 292 -0 C293 -0 293 -0 296 0 C304 0 312 0 321 1 C319 5 317 9 315 12 C314 13 314 14 313 14 C305 25 297 35 288 45 C287 46 285 48 284 49 C279 55 273 61 268 66 C267 67 266 68 265 69 C261 73 257 77 253 81 C250 82 248 84 246 86 C229 102 210 115 191 127 C190 127 190 128 189 128 C132 164 61 192 -7 192 C-9 190 -8 188 -8 186 C-8 185 -8 185 -8 184 C-8 183 -8 182 -8 181 C-8 179 -8 176 -8 174 C-8 172 -8 170 -8 168 C-8 163 -8 158 -8 153 C-8 147 -8 142 -8 137 C-8 127 -8 117 -8 106 C-8 95 -8 83 -8 72 C-8 48 -8 25 -8 1 C-5 0 -3 0 0 0 Z " fill="#472A0F" stroke="#472A0F" transform="translate(544,756)"/>
+<path d="M0 0 C41 0 41 0 251 1 C251 4 251 8 251 11 C251 20 252 28 259 34 C263 37 267 39 272 40 C274 41 274 41 275 42 C275 45 275 47 275 50 C275 51 275 51 275 52 C275 55 275 58 275 60 C275 62 275 64 275 66 C275 71 275 76 275 81 C275 86 275 91 275 96 C275 105 275 115 275 125 C274 125 274 125 273 125 C237 125 200 125 164 125 C160 125 155 125 151 125 C150 125 149 125 148 125 C134 125 120 125 106 126 C91 126 77 126 62 126 C54 126 45 126 36 126 C30 126 23 126 17 126 C14 126 10 126 7 126 C3 126 -1 126 -5 126 C-6 126 -7 126 -8 126 C-9 126 -10 126 -11 126 C-12 126 -12 126 -14 126 C-16 126 -16 126 -18 127 C-19 84 -11 42 0 0 Z " fill="#E29F00" stroke="#E29F00" transform="translate(97,383)"/>
+<path d="M0 0 C1 0 2 0 2 0 C3 0 3 0 5 0 C6 0 7 0 8 0 C8 0 8 0 11 0 C14 0 18 0 21 0 C24 0 26 0 29 0 C34 0 39 0 44 0 C52 0 60 0 67 0 C80 0 92 0 105 0 C117 1 129 1 141 1 C141 1 141 1 143 1 C147 1 151 1 154 1 C185 1 216 1 247 1 C248 2 248 4 249 5 C249 5 249 5 250 7 C259 32 262 60 264 87 C264 87 264 88 264 89 C265 101 265 113 265 125 C169 125 73 125 -27 125 C-27 42 -27 42 -25 40 C-23 40 -22 39 -20 39 C-13 37 -10 34 -7 29 C-5 24 -4 21 -3 16 C-3 15 -3 14 -3 13 C-3 11 -3 10 -3 8 C-3 7 -3 6 -3 5 C-3 5 -3 5 -3 3 C-3 1 -2 0 0 0 Z " fill="#E29F00" stroke="#E29F00" transform="translate(679,383)"/>
+<path d="M0 0 C45 0 89 0 135 0 C135 46 135 91 135 138 C134 138 134 137 133 137 C132 135 132 135 132 132 C132 131 131 130 131 129 C131 128 131 128 130 126 C120 83 94 47 57 23 C42 14 25 7 8 4 C7 3 6 3 5 3 C5 3 5 3 3 3 C2 2 2 2 1 2 C1 1 0 1 0 0 Z " fill="#FDFEFD" stroke="#FDFEFD" transform="translate(889,0)"/>
+<path d="M0 0 C45 0 89 0 135 0 C134 2 134 2 132 3 C131 3 131 3 130 3 C129 3 128 4 127 4 C126 4 125 4 124 4 C111 7 99 12 87 18 C86 19 84 19 83 20 C73 25 65 31 56 39 C55 40 53 42 51 44 C27 65 11 95 4 126 C3 130 2 133 1 137 C1 137 0 137 0 137 C0 92 0 47 0 0 Z " fill="#FDFEFD" stroke="#FDFEFD" transform="translate(0,0)"/>
+<path d="M0 0 C0 0 1 0 1 0 C1 46 1 91 1 138 C-43 138 -86 138 -131 138 C-130 136 -130 136 -128 135 C-127 135 -127 135 -126 135 C-125 135 -124 134 -123 134 C-122 134 -121 134 -120 133 C-104 129 -88 123 -74 114 C-74 114 -74 114 -72 113 C-56 102 -41 89 -30 73 C-30 73 -30 73 -28 70 C-26 67 -24 64 -22 61 C-22 61 -22 61 -21 59 C-11 42 -4 23 -1 4 C-1 1 -1 1 0 0 Z " fill="#FDFEFD" stroke="#FDFEFD" transform="translate(1023,886)"/>
+<path d="M0 0 C0 0 0 0 2 1 C2 3 3 5 3 8 C7 29 15 50 28 67 C29 68 29 69 30 70 C38 81 47 91 57 99 C58 100 59 101 60 101 C79 117 101 126 125 132 C128 133 130 134 133 135 C133 135 133 136 133 136 C89 136 45 136 0 136 C0 91 0 46 0 0 Z " fill="#FDFEFD" stroke="#FDFEFD" transform="translate(0,888)"/>
+</g></g></svg>`;
+const ICON_URI = 'data:image/svg+xml,' + encodeURIComponent(ICON);
+$('favicon').href = ICON_URI;
+document.querySelector('.brand').insertAdjacentHTML('afterbegin', `<img class="logo" src="${ICON_URI}" alt="">`);
+
+/* ---- theme: follow the system, or pin light or dark ---------------------------- */
+const THEMES = ['system', 'light', 'dark'];
+const THEME_ICON = {
+  system: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>',
+  light: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
+  dark: '<path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/>',
+};
+function applyTheme(t) {
+  if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+  else delete document.documentElement.dataset.theme;
+  store('localStorage', 'theme', t === 'system' ? '' : t);
+  const next = THEMES[(THEMES.indexOf(t) + 1) % THEMES.length];
+  $('theme').innerHTML = `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+    stroke-linecap="round" stroke-linejoin="round">${THEME_ICON[t]}</svg>`;
+  $('theme').dataset.tip = `Theme: ${t} — click for ${next}`;
+  $('theme').setAttribute('aria-label', $('theme').dataset.tip);
+}
+$('theme').onclick = () => applyTheme(THEMES[(THEMES.indexOf(stored('localStorage', 'theme') || 'system') + 1) % THEMES.length]);
+applyTheme(stored('localStorage', 'theme') || 'system');
+
+arm();
+showView(stored('localStorage', 'view') || 'overview');
+render();
+</script>

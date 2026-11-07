@@ -1,0 +1,18 @@
+# Runtime + tests: pip install -r requirements.txt. The container installs the runtime part
+# directly in its Dockerfile.
+#
+# cryptography makes the certificate for HTTPS (mcp_manager/tls.py); the MCP SDK brings it anyway.
+# The last three run search's embedding model (embeddinggemma-300m) inside the manager: onnxruntime
+# runs it, tokenizers reads its input, huggingface-hub downloads it on first start. Without them
+# search still works, by word matching.
+mcp>=2.3.0
+pyyaml>=6
+uvicorn>=0.50
+httpx2>=2.0
+cryptography>=42
+onnxruntime>=1.20
+tokenizers>=0.20
+huggingface-hub>=0.25
+
+pytest>=9
+pytest-asyncio>=1.4
