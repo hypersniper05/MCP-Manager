@@ -342,3 +342,64 @@ async def test_a_bad_byte_in_the_token_is_a_401_and_counts():
                                 (b"x-forwarded-for", b"8.8.8.8")]}, receive, send)
         assert sent[0]["status"] == 401
     assert g.banned("8.8.8.8") > 0
+
+
+
+# -- X-Forwarded-For is believed only through the published name ---------------------------
+
+def test_forwarded_for_is_believed_on_the_published_name():
+    s = _scope(peer=("172.17.0.1", 1), headers={"host": "box.ts.net:8443", "x-forwarded-for": "9.9.9.9"})
+    assert client_addr(s, True, ["box.ts.net:*"]) == "9.9.9.9"
+
+
+def test_forwarded_for_addressed_to_localhost_is_not_believed():
+    # a local relay (a web UI's CORS proxy) lets its caller add headers, but it cannot change
+    # Host: the request reaches us as 127.0.0.1, never as the published name
+    s = _scope(peer=("172.17.0.1", 1), headers={"host": "127.0.0.1:8899", "x-forwarded-for": "9.9.9.9"})
+    assert client_addr(s, True, ["box.ts.net:*"]) == "172.17.0.1"
+    assert not _is_local(s, True)                      # and it is not the operator either
+    # without a host list there is nothing to tell the two apart: the old rule holds
+    assert client_addr(s, True) == "9.9.9.9"
+
+
+async def test_a_forged_forwarded_for_cannot_lock_out_someone_else():
+    from mcp_manager.gate import Gate
+    g = _guard(max_auth_failures=2, ban_seconds=60)
+
+    async def app(scope, receive, send):
+        raise AssertionError("a bad key must not reach the app")
+
+    gate = Gate(app, db=None, admin_token="right", guard=g, trust_forwarded_for=True,
+                allowed_hosts=["box.ts.net:*"])
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(msg):
+        pass
+
+    for _ in range(3):   # bad tokens "from" a victim's address, sent to localhost
+        await gate({"type": "http", "path": "/api/v1/keys", "method": "GET",
+                    "client": ["172.17.0.1", 1],
+                    "headers": [(b"authorization", b"Bearer wrong"), (b"host", b"127.0.0.1:8899"),
+                                (b"x-forwarded-for", b"100.64.0.7")]}, receive, send)
+    assert g.banned("100.64.0.7") == 0.0                # the victim is untouched
+    assert g.banned("172.17.0.1") > 0                   # the forger's own bucket is banned
+    mw = _mw(g, trust=True, hosts=["box.ts.net:*"])
+    status, _, _ = await _call(mw, _scope(peer=("172.17.0.1", 1),
+                                          headers={"host": "box.ts.net:8443",
+                                                   "x-forwarded-for": "100.64.0.7"}))
+    assert status == 200                                # the real caller still gets in
+    status, _, _ = await _call(mw, _scope(peer=("172.17.0.1", 1), headers={"host": "127.0.0.1:8899"}))
+    assert status == 200                                # and so does the operator
+
+
+async def test_inventing_addresses_does_not_dodge_the_rate_limit():
+    mw = _mw(_guard(rate_per_minute=3), trust=True, hosts=["box.ts.net:*"])
+    for i in range(3):
+        status, _, _ = await _call(mw, _scope(peer=("172.17.0.1", 1), headers={
+            "host": "127.0.0.1:8899", "x-forwarded-for": f"10.9.9.{i}"}))
+        assert status == 200
+    status, _, _ = await _call(mw, _scope(peer=("172.17.0.1", 1), headers={
+        "host": "127.0.0.1:8899", "x-forwarded-for": "10.9.9.99"}))
+    assert status == 429

@@ -31,7 +31,7 @@ current_key = contextvars.ContextVar("mcpm_key", default=None)       # the key's
 
 class Gate:
     def __init__(self, app, db, admin_token: str | None, require_key: bool = True,
-                 guard=None, trust_forwarded_for: bool = False):
+                 guard=None, trust_forwarded_for: bool = False, allowed_hosts=None):
         self.app = app
         self.db = db
         self.admin_token = admin_token
@@ -41,6 +41,7 @@ class Gate:
         # unit test that builds the gate alone.
         self.guard = guard
         self.trust = trust_forwarded_for
+        self.allowed_hosts = allowed_hosts or []
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
@@ -79,11 +80,11 @@ class Gate:
         # the local operator is never locked out, so its typos are not counted against the
         # address it shares with every other local caller (in Docker, the bridge gateway)
         if self.guard is not None and not _is_local(scope, self.trust):
-            self.guard.fail(client_addr(scope, self.trust))
+            self.guard.fail(client_addr(scope, self.trust, self.allowed_hosts))
 
     def _ok(self, scope):
         if self.guard is not None:
-            self.guard.ok(client_addr(scope, self.trust))
+            self.guard.ok(client_addr(scope, self.trust, self.allowed_hosts))
 
 
 def _header(scope, name):

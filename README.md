@@ -454,7 +454,10 @@ everyone has.
 The `limits` block is off nobody's path but an abuser's: a per-caller request rate, an escalating
 lockout after repeated bad credentials, a cap on body size, and the browser security headers. Behind
 a proxy set `trust_forwarded_for` (or `MCPM_TRUST_PROXY=1`) so a caller is judged by the real address
-the proxy reports — and a request the proxy did not stamp is the local operator, never limited. The
+the proxy reports — and a request the proxy did not stamp is the local operator, never limited. With
+`allowed_hosts` set, that header is believed only on a request addressed to one of those names (a
+proxy that passes the Host header through, as Tailscale and Caddy do, always sends one), so
+something else on the machine that relays requests cannot forge a caller's address. The
 deploy-time knobs also take env overrides: `MCPM_TRUST_PROXY`, `MCPM_RATE_PER_MINUTE`,
 `MCPM_MAX_BODY_MB`, `MCPM_MAX_CONCURRENCY`, and `MCPM_ALLOWED_HOSTS` (comma-separated) for
 `allowed_hosts`.

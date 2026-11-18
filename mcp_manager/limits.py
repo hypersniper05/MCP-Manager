@@ -9,7 +9,12 @@ that survives a restart is a counter that also survives the bug that filled it.
 
 Who a request *is* comes from the socket, unless `trust_forwarded_for` says a trusted proxy
 sits in front — then from the last hop of X-Forwarded-For, which that proxy sets and a client
-cannot forge past it. A request the proxy did not stamp (no X-Forwarded-For, with the port
+cannot forge past it. With `allowed_hosts` listing the published names, that header is believed
+only on a request addressed to one of them: the proxy always sends the public name, so a request
+addressed to localhost did not come through it. That matters when something on this machine
+relays requests for others -- a web UI's CORS proxy, say -- and lets them add headers: a
+made-up X-Forwarded-For could otherwise get another caller locked out, or dodge the rate limit
+by inventing a new address per request. A request the proxy did not stamp (no X-Forwarded-For, with the port
 bound to localhost) is the operator reaching it directly, and is never rate-limited or locked
 out: the portal and the admin API are localhost-only by design, and locking the owner out of
 their own machine is not a security property worth having. A lockout runs out on its own: a
@@ -101,14 +106,32 @@ def sdk_hosts(allowed) -> list:
     return out
 
 
-def client_addr(scope, trust_forwarded_for: bool) -> str:
-    """The address we hold a caller to. Behind a trusted proxy that is the real client; the
-    rightmost X-Forwarded-For hop is the one that proxy wrote, so it cannot be spoofed from
-    outside. Otherwise it is the peer on the socket."""
-    if trust_forwarded_for:
-        xff = _header(scope, b"x-forwarded-for").decode(errors="replace")
-        if xff:
-            return xff.split(",")[-1].strip()
+def _trusted_hop(scope, trust_forwarded_for: bool, allowed_hosts=None) -> str:
+    """The client address the trusted proxy wrote, or "" when this request did not come
+    through it. The rightmost X-Forwarded-For hop is the proxy's own (Tailscale overwrites the
+    header; others append), so it cannot be spoofed past the proxy. With the published names
+    known, a request addressed to a loopback name did not come through the proxy at all, and
+    whatever X-Forwarded-For it carries was written by whoever sent it."""
+    if not trust_forwarded_for:
+        return ""
+    xff = _header(scope, b"x-forwarded-for").decode("latin-1")
+    if not xff:
+        return ""
+    if allowed_hosts:
+        host = _header(scope, b"host").decode("latin-1").strip().lower()
+        if _hostname(host) in _LOOPBACK_HOSTS:
+            return ""
+    return xff.split(",")[-1].strip()
+
+
+def client_addr(scope, trust_forwarded_for: bool, allowed_hosts=None) -> str:
+    """The address we hold a caller to: the real client when the request came through the
+    trusted proxy, otherwise the peer on the socket. A request with an X-Forwarded-For the
+    proxy did not write is therefore judged by its socket -- one shared address for everything
+    that tries it -- so the header buys it nothing."""
+    hop = _trusted_hop(scope, trust_forwarded_for, allowed_hosts)
+    if hop:
+        return hop
     peer = scope.get("client")
     return peer[0] if peer else "?"
 
@@ -251,7 +274,7 @@ class Limits:
             return await self.app(scope, receive, send)
 
         exempt = _is_local(scope, self.trust)
-        addr = client_addr(scope, self.trust)
+        addr = client_addr(scope, self.trust, self.allowed_hosts)
 
         if not exempt:
             left = self.guard.banned(addr)

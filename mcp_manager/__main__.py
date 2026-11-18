@@ -53,7 +53,8 @@ async def main(config_path: str = "config.yaml"):
     app.state.guard = guard
     app.add_middleware(Gate, db=database, admin_token=boot["admin_token"],
                        require_key=boot["require_key_for_mcp"],
-                       guard=guard, trust_forwarded_for=lim["trust_forwarded_for"])
+                       guard=guard, trust_forwarded_for=lim["trust_forwarded_for"],
+                       allowed_hosts=hosts)
     # Added LAST so it sits in FRONT of the gate -- and that ordering is the whole point. A
     # browser preflight (OPTIONS) carries no Authorization header, and the gate would 401 it
     # before CORS ever got the chance to answer, so a standalone portal on another origin

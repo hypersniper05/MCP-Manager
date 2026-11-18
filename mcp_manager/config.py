@@ -48,6 +48,9 @@ DEFAULTS = {
     # locked out by its real address, which that proxy writes and a client cannot forge; left
     # OFF, the socket peer is used, which is right for a direct bind and coarse behind a proxy.
     # A genuinely local request (loopback, no proxy header) is the operator and is never limited.
+    # With allowed_hosts set, X-Forwarded-For is believed only on a request addressed to one of
+    # those names -- the proxy always sends the public name -- so a local relay that lets callers
+    # add headers cannot use it to pose as somebody else.
     "limits": {"trust_forwarded_for": False,
                "max_body_mb": 16,            # refuse a request body larger than this
                "rate_per_minute": 240,       # per-caller request ceiling; 0 disables it
