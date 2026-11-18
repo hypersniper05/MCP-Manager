@@ -5,7 +5,8 @@ scope/receive/send drives it directly and deterministically."""
 
 import pytest
 
-from mcp_manager.limits import Guard, Limits, client_addr, host_allowed, sdk_hosts, _is_local
+from mcp_manager.limits import (Guard, Limits, client_addr, host_allowed, sdk_hosts, _is_local,
+                                _own_network)
 
 
 def _scope(path="/mcp", peer=("8.8.8.8", 4321), headers=None, scheme="http"):
@@ -80,9 +81,10 @@ def test_a_forwarded_for_chain_takes_the_last_hop():
     assert client_addr(s, trust_forwarded_for=True) == "3.3.3.3"
 
 
-def test_local_is_loopback_without_a_proxy_in_front():
-    assert _is_local(_scope(peer=("127.0.0.1", 1)), False)
-    assert not _is_local(_scope(peer=("10.0.0.5", 1)), False)
+def test_without_a_proxy_local_is_this_machine_or_a_private_network():
+    for peer in ("127.0.0.1", "10.0.0.5", "172.17.0.1", "192.168.1.5", "100.101.102.103"):
+        assert _is_local(_scope(peer=(peer, 1)), False), peer
+    assert not _is_local(_scope(peer=("8.8.4.4", 1)), False)     # the internet is limited
     # loopback but proxied -> not the operator
     assert not _is_local(_scope(peer=("127.0.0.1", 1), headers={"x-forwarded-for": "9.9.9.9"}), True)
     assert not _is_local(_scope(peer=("127.0.0.1", 1), headers={"tailscale-funnel-request": "?1"}), False)
@@ -403,3 +405,49 @@ async def test_inventing_addresses_does_not_dodge_the_rate_limit():
     status, _, _ = await _call(mw, _scope(peer=("172.17.0.1", 1), headers={
         "host": "127.0.0.1:8899", "x-forwarded-for": "10.9.9.99"}))
     assert status == 429
+
+
+# -- review fixes: the default Docker install, header lines, own networks -------------------
+
+def test_own_networks():
+    for a in ("127.0.0.1", "::1", "10.1.2.3", "172.17.0.1", "192.168.1.5", "100.101.102.103",
+              "fe80::1", "fd00::1", "::ffff:172.17.0.1"):
+        assert _own_network(a), a
+    for a in ("8.8.8.8", "2001:4860:4860::8888", "?", ""):
+        assert not _own_network(a), a
+
+
+async def test_a_default_docker_install_never_locks_everyone_out():
+    # trust off, as compose ships it: every caller is the bridge gateway, so a count for that
+    # address is one count for everyone. One app retrying a stale key must not lock out the
+    # other apps or the admin, and they must not share one rate budget either.
+    from mcp_manager.gate import Gate
+    g = _guard(max_auth_failures=2, ban_seconds=60, rate_per_minute=3)
+
+    async def app(scope, receive, send):
+        raise AssertionError("a bad token must not reach the app")
+
+    gate = Gate(app, db=None, admin_token="right", guard=g, trust_forwarded_for=False)
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(msg):
+        pass
+
+    for _ in range(4):
+        await gate({"type": "http", "path": "/api/v1/keys", "method": "GET",
+                    "client": ["172.17.0.1", 1],
+                    "headers": [(b"authorization", b"Bearer stale")]}, receive, send)
+    assert g.banned("172.17.0.1") == 0.0
+    mw = _mw(g)
+    for _ in range(6):
+        status, _, _ = await _call(mw, _scope(peer=("172.17.0.1", 1)))
+        assert status == 200
+
+
+def test_the_last_forwarded_for_line_wins():
+    # a proxy that adds its own line rather than appending: the client's own line comes first
+    s = {"type": "http", "path": "/mcp", "client": ["127.0.0.1", 1],
+         "headers": [(b"x-forwarded-for", b"6.6.6.6"), (b"x-forwarded-for", b"9.9.9.9")]}
+    assert client_addr(s, True) == "9.9.9.9"

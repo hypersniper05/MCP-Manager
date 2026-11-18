@@ -24,6 +24,7 @@ on, because the socket peer there is always the bridge gateway — never the rea
 never loopback — so X-Forwarded-For is the only thing that tells callers apart.
 """
 
+import ipaddress
 import logging
 import time
 from collections import defaultdict, deque
@@ -47,7 +48,24 @@ def _warn(kind: str, msg: str, *args) -> None:
     _quiet[kind] = [now, 0]
     log.warning(msg + extra, *args)
 
-_LOOPBACK = {"127.0.0.1", "::1", "localhost"}
+# Without a trusted proxy, a caller on this machine or on a private network is never limited.
+# Such callers cannot be told apart: in Docker every one of them arrives from the bridge gateway,
+# so one count for that address let one app retrying a stale key lock out every app and the
+# admin (reproduced 2026-11-18). The limits then guard a manager exposed straight to the
+# internet, where peers are public addresses. 100.64.0.0/10 is Tailscale's range.
+_CGNAT = ipaddress.ip_network("100.64.0.0/10")
+
+
+def _own_network(addr: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return False
+    if ip.version == 6 and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped
+    return ip.is_loopback or ip.is_private or ip.is_link_local \
+        or (ip.version == 4 and ip in _CGNAT)
+
 # The names this machine answers to on itself. They are always allowed in the Host header:
 # a DNS-rebinding page reaches 127.0.0.1 under ITS OWN name (Host: evil.example), so a
 # loopback name in Host means the caller asked for this machine by a name only it can mean.
@@ -114,7 +132,10 @@ def _trusted_hop(scope, trust_forwarded_for: bool, allowed_hosts=None) -> str:
     whatever X-Forwarded-For it carries was written by whoever sent it."""
     if not trust_forwarded_for:
         return ""
-    xff = _header(scope, b"x-forwarded-for").decode("latin-1")
+    # every X-Forwarded-For line, in order: a proxy that adds a line of its own instead of
+    # appending to the client's would otherwise leave the client's line first, and believed
+    xff = ",".join(v.decode("latin-1") for k, v in scope.get("headers", [])
+                   if k == b"x-forwarded-for")
     if not xff:
         return ""
     if allowed_hosts:
@@ -141,14 +162,14 @@ def _is_local(scope, trust_forwarded_for: bool) -> bool:
     X-Forwarded-For came through a proxy and is never the operator. With a trusted proxy in
     front, a request WITHOUT that header reached the (localhost-bound) port directly -- so it
     is this machine, whatever the socket says; this is the case that matters in Docker, where
-    the peer is always the bridge gateway and never loopback. Without a trusted proxy, the
-    older test holds: a loopback peer with no proxy header, which is right for a direct bind."""
+    the peer is always the bridge gateway and never loopback. Without a trusted proxy: a peer
+    on this machine or a private network (see _own_network) with no proxy header."""
     if _header(scope, b"x-forwarded-for"):
         return False
     if trust_forwarded_for:
         return True
     peer = scope.get("client")
-    return bool(peer) and peer[0] in _LOOPBACK \
+    return bool(peer) and _own_network(peer[0]) \
         and not _header(scope, b"tailscale-funnel-request")
 
 

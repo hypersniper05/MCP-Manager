@@ -331,6 +331,12 @@ nothing on any machine is ever trusted by hand:
   then refused, which closes DNS rebinding (a web page that points its own name at your machine)
   on every path, while `localhost` keeps working. The portal and `/api` stay
   where they belong — on the machine, for whoever is sitting at it.
+
+  Never set `MCPM_TRUST_PROXY` while the port itself is reachable from the network. A caller that
+  connects directly can then write any `X-Forwarded-For`, and a caller that sends none counts as
+  you, so it is never limited. With `MCPM_ALLOWED_HOSTS` set, `/mcp` also refuses (`403`) a request
+  that carries a browser `Origin` header. A web page that connects to `/mcp` from the browser is
+  refused. Apps that connect from a server or a desktop program are not affected.
 - **Cloudflare Tunnel** — the same shape through your own domain, certificate included.
 - **Caddy in front** — for a domain you own, `reverse_proxy localhost:8899` is a complete
   Caddyfile, and Let's Encrypt certificates come automatically.
@@ -457,7 +463,11 @@ a proxy set `trust_forwarded_for` (or `MCPM_TRUST_PROXY=1`) so a caller is judge
 the proxy reports — and a request the proxy did not stamp is the local operator, never limited. With
 `allowed_hosts` set, that header is believed only on a request addressed to one of those names (a
 proxy that passes the Host header through, as Tailscale and Caddy do, always sends one), so
-something else on the machine that relays requests cannot forge a caller's address. The
+something else on the machine that relays requests cannot forge a caller's address. Without a
+proxy, a caller on this machine or a private network (the Docker bridge, your LAN, a Tailscale
+address) is never limited either. Those callers cannot be told apart: in Docker they all arrive
+from the bridge address, and one shared count would let one app with an old key lock out every
+app and the admin. The limits then guard a manager exposed straight to the internet. The
 deploy-time knobs also take env overrides: `MCPM_TRUST_PROXY`, `MCPM_RATE_PER_MINUTE`,
 `MCPM_MAX_BODY_MB`, `MCPM_MAX_CONCURRENCY`, and `MCPM_ALLOWED_HOSTS` (comma-separated) for
 `allowed_hosts`.
