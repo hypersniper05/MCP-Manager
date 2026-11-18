@@ -326,7 +326,10 @@ nothing on any machine is ever trusted by hand:
 
   Keep the manager on localhost while you do this (the default; under Docker, `MCPM_PUBLISH=127.0.0.1`),
   so the mounted path is the only way in, and set `MCPM_TRUST_PROXY=1` so the rate limit and the
-  lockout count the real caller Tailscale reports rather than the proxy. The portal and `/api` stay
+  lockout count the real caller Tailscale reports rather than the proxy. Set
+  `MCPM_ALLOWED_HOSTS=<machine>.<tailnet>.ts.net:*` too: a request that names any other host is
+  then refused, which closes DNS rebinding (a web page that points its own name at your machine)
+  on every path, while `localhost` keeps working. The portal and `/api` stay
   where they belong — on the machine, for whoever is sitting at it.
 - **Cloudflare Tunnel** — the same shape through your own domain, certificate included.
 - **Caddy in front** — for a domain you own, `reverse_proxy localhost:8899` is a complete
@@ -416,7 +419,8 @@ boot:
   default_group: default   # the group for keys created without one, and for keyless access
   require_key_for_mcp: true  # false = /mcp accepts anyone with the default group's view, for
                              # clients that cannot send an Authorization header
-  allowed_hosts: null      # e.g. ["myhost:*"] turns on DNS-rebinding protection
+  allowed_hosts: null      # e.g. ["myhost.tailnet.ts.net:*"]: refuse any other Host (421) on every
+                           # path -- DNS-rebinding protection; localhost always works
   limits:                  # the edge, for when the manager faces more than localhost (all optional)
     trust_forwarded_for: false  # ON behind a proxy (Tailscale/Caddy): judge a caller by X-Forwarded-For
     rate_per_minute: 240        # per-caller request ceiling; 0 disables
@@ -452,7 +456,8 @@ lockout after repeated bad credentials, a cap on body size, and the browser secu
 a proxy set `trust_forwarded_for` (or `MCPM_TRUST_PROXY=1`) so a caller is judged by the real address
 the proxy reports — and a request the proxy did not stamp is the local operator, never limited. The
 deploy-time knobs also take env overrides: `MCPM_TRUST_PROXY`, `MCPM_RATE_PER_MINUTE`,
-`MCPM_MAX_BODY_MB`, `MCPM_MAX_CONCURRENCY`.
+`MCPM_MAX_BODY_MB`, `MCPM_MAX_CONCURRENCY`, and `MCPM_ALLOWED_HOSTS` (comma-separated) for
+`allowed_hosts`.
 
 ## Management API
 

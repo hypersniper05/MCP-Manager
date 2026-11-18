@@ -12,7 +12,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from . import api, config, db
 from .gateway import Gateway
 from .gate import Gate
-from .limits import Guard, Limits
+from .limits import Guard, Limits, sdk_hosts
 from starlette.middleware.cors import CORSMiddleware
 
 log = logging.getLogger("mcpm")
@@ -41,8 +41,11 @@ async def main(config_path: str = "config.yaml"):
         # without this the MCP endpoint is localhost-only: streamable_http_app() defaults to
         # host="127.0.0.1" and installs Host-header protection allowing only localhost, so a
         # client arriving over LAN or Tailscale is refused before our own gate is consulted.
+        # With hosts listed the edge (Limits) checks Host on every path first; the SDK's copy
+        # gets the same list in its own syntax, so the two never disagree.
         transport_security=TransportSecuritySettings(
-            enable_dns_rebinding_protection=bool(hosts), allowed_hosts=list(hosts)))
+            enable_dns_rebinding_protection=bool(hosts),
+            allowed_hosts=sdk_hosts(hosts) if hosts else []))
     app.state.db = database
     app.state.gateway = gw
     app.state.admin_token = boot["admin_token"]
@@ -66,19 +69,19 @@ async def main(config_path: str = "config.yaml"):
     # body, is turned away before CORS or the gate, and even that refusal carries the headers.
     app.add_middleware(Limits, guard=guard, trust_forwarded_for=lim["trust_forwarded_for"],
                        max_body_bytes=lim["max_body_mb"] * 1024 * 1024,
-                       security_headers=lim["security_headers"], https=bool(tls))
+                       security_headers=lim["security_headers"], https=bool(tls),
+                       allowed_hosts=hosts)
 
     scheme = "https" if tls else "http"
     log.info("MCP on %s://%s:%d/mcp — portal on %s://%s:%d/ — API on /api/v1",
              scheme, boot["host"], boot["port"], scheme, boot["host"], boot["port"])
-    # uvicorn's own ceilings back the Limits layer: a hard cap on in-flight requests (503
-    # past it), a bound on how large a single header event may grow, and a keep-alive timeout
-    # so an idle socket is not held open for free.
+    # uvicorn's own ceiling backs the Limits layer: a hard cap on in-flight requests (503 past
+    # it). Its other guards are already right by default and stay that way -- h11 refuses a
+    # header block over 16 KiB, and an idle keep-alive socket is closed after 5 s.
     await uvicorn.Server(uvicorn.Config(app, host=boot["host"], port=boot["port"],
                                        log_level="warning",
                                        limit_concurrency=lim["max_concurrency"] or None,
-                                       h11_max_incomplete_event_size=64 * 1024,
-                                       timeout_keep_alive=5, **tls)).serve()
+                                       **tls)).serve()
 
 
 if __name__ == "__main__":

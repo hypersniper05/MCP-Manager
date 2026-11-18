@@ -36,10 +36,20 @@ services:
       MCPM_MAX_BODY_MB: ${MCPM_MAX_BODY_MB:-}
       MCPM_RATE_PER_MINUTE: ${MCPM_RATE_PER_MINUTE:-}
       MCPM_MAX_CONCURRENCY: ${MCPM_MAX_CONCURRENCY:-}
+      # DNS-rebinding protection: the Host names clients use, comma-separated (for example
+      # myhost.tailnet.ts.net:*). Set, a request for any other Host is refused on every path;
+      # localhost always works. Blank = off.
+      MCPM_ALLOWED_HOSTS: ${MCPM_ALLOWED_HOSTS:-}
     volumes:
       - data:/data          # the SQLite database and the model file
       - ./certs:/certs:ro   # HTTPS with a certificate of your own: MCPM_TLS_CERT=/certs/...
     restart: unless-stopped
+    # Bounded logs: Docker's default json-file driver never rotates, so a caller who can make
+    # the manager log could otherwise fill the disk. Applies to whichever driver the daemon uses.
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   data:

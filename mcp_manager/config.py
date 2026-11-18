@@ -28,11 +28,14 @@ DEFAULTS = {
     "admin_token": None,          # unset -> the management API refuses, it does not run open
     "default_group": "default",
     "require_key_for_mcp": True,  # a wrong key does not connect
-    # DNS-rebinding protection defaults OFF for us, and that is deliberate. It exists to
-    # protect a server that means to be localhost-only. Binding a network interface is a
-    # supported mode here, and a fixed Host list would break it; every request has to carry
-    # a key or an admin token anyway -- a stronger check than a Host header. List hosts here
-    # (e.g. "100.64.0.5:*") to turn it on.
+    # DNS-rebinding protection defaults OFF for us, and that is deliberate. Binding a network
+    # interface is a supported mode here, and a Host list we guessed would break it; every
+    # request has to carry a key or an admin token anyway -- a stronger check than a Host
+    # header. List the names clients use (e.g. "myhost.tailnet.ts.net:*", "100.64.0.5:*") to
+    # turn it on -- recommended once a proxy publishes the manager. Then a request for any
+    # other Host is refused (421) on EVERY path: the portal and the API as well as /mcp. The
+    # loopback names are always allowed, so the portal keeps working on this machine.
+    # Env: MCPM_ALLOWED_HOSTS, comma-separated.
     "allowed_hosts": None,
     # TLS is uvicorn's own: set both paths and the manager itself serves HTTPS — no proxy,
     # still one container. Unset = plain HTTP. On a LAN a self-signed certificate is the
@@ -84,8 +87,10 @@ def _env_int(d: dict, key: str, env: str) -> None:
 
 
 def _env_bool(d: dict, key: str, env: str) -> None:
+    # Blank is unset, not "false": docker compose passes every variable it lists, empty when
+    # .env does not set it, and that must not quietly overrule the config file.
     v = os.environ.get(env)
-    if v is not None:
+    if v is not None and v.strip():
         d[key] = v.strip().lower() in ("1", "true", "yes", "on")
 
 
@@ -108,6 +113,14 @@ def load(path: str) -> tuple:
     _env_int(boot["limits"], "max_body_mb", "MCPM_MAX_BODY_MB")
     _env_int(boot["limits"], "rate_per_minute", "MCPM_RATE_PER_MINUTE")
     _env_int(boot["limits"], "max_concurrency", "MCPM_MAX_CONCURRENCY")
+    # The names a client uses depend on how the manager is published, so the env wins here
+    # too. One string or a list, in either place; blank entries are dropped.
+    if os.environ.get("MCPM_ALLOWED_HOSTS", "").strip():
+        boot["allowed_hosts"] = os.environ["MCPM_ALLOWED_HOSTS"]
+    hosts = boot.get("allowed_hosts") or []
+    if isinstance(hosts, str):
+        hosts = hosts.split(",")
+    boot["allowed_hosts"] = [str(h).strip() for h in hosts if str(h).strip()] or None
     # The container sets this too: inside Docker only a 0.0.0.0 bind is reachable through
     # the port mapping, while a bare install should stay on localhost (the default).
     if os.environ.get("MCPM_HOST"):

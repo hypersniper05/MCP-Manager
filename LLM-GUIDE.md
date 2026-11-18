@@ -146,7 +146,8 @@ boot:
   db: mcp_manager.db
   default_group: default   # group used for keys created without one (and for keyless access)
   require_key_for_mcp: true   # false = /mcp accepts anyone, with the default group's view
-  allowed_hosts: null      # set e.g. ["myhost:*"] to turn on DNS-rebinding protection
+  allowed_hosts: null      # e.g. ["myhost:*"]: any other Host is refused (421) on every path
+                           # (DNS-rebinding protection); loopback names always pass
   tls_cert: null           # with tls_key: serve HTTPS directly (python -m mcp_manager.tls makes a pair)
   tls_key: null            # both files or neither — half a pair stops the start
   portal_file: portal/index.html

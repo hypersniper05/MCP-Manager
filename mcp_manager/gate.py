@@ -18,7 +18,7 @@ import contextvars
 import secrets
 
 from . import db
-from .limits import client_addr
+from .limits import client_addr, _is_local
 
 # The gate resolves identity from the credential and hands it down; handlers read it from
 # here instead of parsing headers themselves. contextvars because the SDK runs handlers on
@@ -55,7 +55,10 @@ class Gate:
             # otherwise means inventing a session layer for one page.
             if not self.admin_token:
                 return await _deny(send, 503, "management API disabled: no admin token configured")
-            if not secrets.compare_digest(header.removeprefix("Bearer ").strip(), self.admin_token):
+            # bytes, not str: compare_digest refuses a str with non-ASCII in it, and a caller
+            # picks what this header holds -- that was an unhandled 500 per request
+            if not secrets.compare_digest(header.removeprefix("Bearer ").strip().encode(),
+                                          self.admin_token.encode()):
                 self._fail(scope)
                 return await _deny(send, 401, "admin token required")
             self._ok(scope)
@@ -73,7 +76,9 @@ class Gate:
         return await self.app(scope, receive, send)
 
     def _fail(self, scope):
-        if self.guard is not None:
+        # the local operator is never locked out, so its typos are not counted against the
+        # address it shares with every other local caller (in Docker, the bridge gateway)
+        if self.guard is not None and not _is_local(scope, self.trust):
             self.guard.fail(client_addr(scope, self.trust))
 
     def _ok(self, scope):
@@ -82,9 +87,12 @@ class Gate:
 
 
 def _header(scope, name):
+    # latin-1, HTTP's own charset for header bytes: it decodes anything. A strict UTF-8 decode
+    # let any caller turn a bad byte in Authorization into a 500 and a traceback in the log --
+    # past the lockout, since the request died before its failure was counted.
     for k, v in scope.get("headers", []):
-        if k.decode().lower() == name:
-            return v.decode()
+        if k.decode("latin-1").lower() == name:
+            return v.decode("latin-1")
     return ""
 
 

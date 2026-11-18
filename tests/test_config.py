@@ -10,7 +10,8 @@ import pytest
 from mcp_manager import config
 
 ENV_VARS = ("MCPM_TLS_CERT", "MCPM_TLS_KEY", "MCPM_ADMIN_TOKEN", "MCPM_DB",
-            "MCPM_MODELS_DIR", "MCPM_HOST")
+            "MCPM_MODELS_DIR", "MCPM_HOST", "MCPM_ALLOWED_HOSTS", "MCPM_TRUST_PROXY",
+            "MCPM_RATE_PER_MINUTE", "MCPM_MAX_BODY_MB", "MCPM_MAX_CONCURRENCY")
 
 
 @pytest.fixture
@@ -83,3 +84,36 @@ def test_half_a_tls_config_stops_the_start_with_a_named_missing_file(clean_env, 
     with pytest.raises(SystemExit) as e:
         config.tls_kwargs(boot)
     assert "gone.pem" in str(e.value)                 # and names the file that is not there
+
+
+def test_the_host_allow_list_is_off_by_default(clean_env, tmp_path):
+    boot, _ = config.load(write_cfg(tmp_path))
+    assert boot["allowed_hosts"] is None
+
+
+def test_the_host_allow_list_takes_a_list_or_one_string(clean_env, tmp_path):
+    boot, _ = config.load(write_cfg(tmp_path, "boot:\n  allowed_hosts: ['a.example:*', ' ']\n"))
+    assert boot["allowed_hosts"] == ["a.example:*"]
+    boot, _ = config.load(write_cfg(tmp_path, "boot:\n  allowed_hosts: 'a.example:*, b.example'\n"))
+    assert boot["allowed_hosts"] == ["a.example:*", "b.example"]
+
+
+def test_env_sets_the_host_allow_list(clean_env, tmp_path, monkeypatch):
+    # how it is published is a property of the deployment, so the env beats the file
+    monkeypatch.setenv("MCPM_ALLOWED_HOSTS", "box.tailnet.ts.net:*,10.0.0.5:8899")
+    boot, _ = config.load(write_cfg(tmp_path, "boot:\n  allowed_hosts: ['old:*']\n"))
+    assert boot["allowed_hosts"] == ["box.tailnet.ts.net:*", "10.0.0.5:8899"]
+
+
+def test_a_blank_env_var_does_not_overrule_the_file(clean_env, tmp_path, monkeypatch):
+    # docker compose passes every variable it lists, empty when .env leaves it unset
+    monkeypatch.setenv("MCPM_TRUST_PROXY", "")
+    monkeypatch.setenv("MCPM_RATE_PER_MINUTE", "")
+    body = "boot:" + chr(10) + "  limits:" + chr(10) + "    trust_forwarded_for: true" + chr(10) \
+        + "    rate_per_minute: 99" + chr(10)
+    boot, _ = config.load(write_cfg(tmp_path, body))
+    assert boot["limits"]["trust_forwarded_for"] is True
+    assert boot["limits"]["rate_per_minute"] == 99
+    monkeypatch.setenv("MCPM_TRUST_PROXY", "0")       # an explicit value still wins
+    boot, _ = config.load(write_cfg(tmp_path, body))
+    assert boot["limits"]["trust_forwarded_for"] is False
