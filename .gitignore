@@ -9,6 +9,7 @@ models/
 
 # secrets
 .env
+.env.bak*
 # certificates: the installers' public root, or a pair of your own, whose key is a secret
 certs/
 # Claude Code MCP config: holds a live key for this machine

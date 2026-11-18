@@ -18,6 +18,7 @@ import contextvars
 import secrets
 
 from . import db
+from .limits import client_addr
 
 # The gate resolves identity from the credential and hands it down; handlers read it from
 # here instead of parsing headers themselves. contextvars because the SDK runs handlers on
@@ -29,11 +30,17 @@ current_key = contextvars.ContextVar("mcpm_key", default=None)       # the key's
 
 
 class Gate:
-    def __init__(self, app, db, admin_token: str | None, require_key: bool = True):
+    def __init__(self, app, db, admin_token: str | None, require_key: bool = True,
+                 guard=None, trust_forwarded_for: bool = False):
         self.app = app
         self.db = db
         self.admin_token = admin_token
         self.require_key = require_key
+        # The lockout is reported here, where a credential is judged, and enforced in the
+        # Limits layer in front, where a banned caller never reaches this code. None in a
+        # unit test that builds the gate alone.
+        self.guard = guard
+        self.trust = trust_forwarded_for
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
@@ -49,17 +56,29 @@ class Gate:
             if not self.admin_token:
                 return await _deny(send, 503, "management API disabled: no admin token configured")
             if not secrets.compare_digest(header.removeprefix("Bearer ").strip(), self.admin_token):
+                self._fail(scope)
                 return await _deny(send, 401, "admin token required")
+            self._ok(scope)
         elif path.startswith("/mcp") and self.require_key:
             row = db.group_for_key(self.db, header.removeprefix("Bearer ").strip())
             if not row:
+                self._fail(scope)
                 return await _deny(send, 401, "a registered key is required")
             current_client.set(row["label"])
             current_group.set(row["name"])
             current_key.set(row["key_id"])
             db.touch_key(self.db, row["key_id"])   # the settings page's "last used"
+            self._ok(scope)
 
         return await self.app(scope, receive, send)
+
+    def _fail(self, scope):
+        if self.guard is not None:
+            self.guard.fail(client_addr(scope, self.trust))
+
+    def _ok(self, scope):
+        if self.guard is not None:
+            self.guard.ok(client_addr(scope, self.trust))
 
 
 def _header(scope, name):

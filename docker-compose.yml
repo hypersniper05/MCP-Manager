@@ -26,6 +26,16 @@ services:
       # (/data/tls/...); one of your own goes in ./certs (/certs/...). Blank (the default) = plain HTTP.
       MCPM_TLS_CERT: ${MCPM_TLS_CERT:-}
       MCPM_TLS_KEY: ${MCPM_TLS_KEY:-}
+      # Edge limits (mcp_manager/limits.py). All optional -- unset leaves the built-in defaults.
+      # Turn MCPM_TRUST_PROXY on when a proxy (Tailscale Serve/Funnel, Caddy) sits in front: then
+      # a caller is rate-limited and locked out by its real X-Forwarded-For address, not the
+      # proxy's, and a request the proxy did not stamp is treated as the local operator. In a
+      # container the socket peer is always the bridge gateway, so without this every caller
+      # shares one bucket.
+      MCPM_TRUST_PROXY: ${MCPM_TRUST_PROXY:-}
+      MCPM_MAX_BODY_MB: ${MCPM_MAX_BODY_MB:-}
+      MCPM_RATE_PER_MINUTE: ${MCPM_RATE_PER_MINUTE:-}
+      MCPM_MAX_CONCURRENCY: ${MCPM_MAX_CONCURRENCY:-}
     volumes:
       - data:/data          # the SQLite database and the model file
       - ./certs:/certs:ro   # HTTPS with a certificate of your own: MCPM_TLS_CERT=/certs/...

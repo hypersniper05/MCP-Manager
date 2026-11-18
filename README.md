@@ -312,8 +312,22 @@ nothing on any machine is ever trusted by hand:
   the certificate.) That command takes port 443 of the machine's tailnet name; if
   `tailscale serve status` shows something already there, add `--https=<port>` and use
   `https://<machine>.<tailnet>.ts.net:<port>/mcp`. **Tailscale Funnel** (`tailscale funnel`) is
-  the same, published to the public internet — the admin panel and API included, with the admin
-  token and app keys as the only lock, so prefer Serve unless an app outside your tailnet needs it.
+  the same, published to the public internet. When you reach past your own machine — the tailnet,
+  and the public internet most of all — expose **only the MCP endpoint**. `--set-path /mcp` mounts
+  that one path and nothing else, so the portal and the admin API are never served off this box;
+  the only thing a remote caller can reach is the key-guarded `/mcp`:
+
+  ```bash
+  # tailnet only, MCP endpoint only:
+  tailscale serve  --bg --https=9443 --set-path /mcp http://127.0.0.1:8899/mcp
+  # public internet, MCP endpoint only:
+  tailscale funnel --bg --https=8443 --set-path /mcp http://127.0.0.1:8899/mcp
+  ```
+
+  Keep the manager on localhost while you do this (the default; under Docker, `MCPM_PUBLISH=127.0.0.1`),
+  so the mounted path is the only way in, and set `MCPM_TRUST_PROXY=1` so the rate limit and the
+  lockout count the real caller Tailscale reports rather than the proxy. The portal and `/api` stay
+  where they belong — on the machine, for whoever is sitting at it.
 - **Cloudflare Tunnel** — the same shape through your own domain, certificate included.
 - **Caddy in front** — for a domain you own, `reverse_proxy localhost:8899` is a complete
   Caddyfile, and Let's Encrypt certificates come automatically.
@@ -403,6 +417,12 @@ boot:
   require_key_for_mcp: true  # false = /mcp accepts anyone with the default group's view, for
                              # clients that cannot send an Authorization header
   allowed_hosts: null      # e.g. ["myhost:*"] turns on DNS-rebinding protection
+  limits:                  # the edge, for when the manager faces more than localhost (all optional)
+    trust_forwarded_for: false  # ON behind a proxy (Tailscale/Caddy): judge a caller by X-Forwarded-For
+    rate_per_minute: 240        # per-caller request ceiling; 0 disables
+    max_body_mb: 16             # refuse a request body larger than this
+    max_concurrency: 256        # refuse (503) past this many in-flight requests
+    max_auth_failures: 8        # bad token/key tries in the window, then an escalating lockout
 
 upstreams:
   - name: browser
@@ -426,6 +446,13 @@ groups:
 The admin token comes from `.env`, never from `config.yaml`, and the shipped config seeds no keys
 and no servers, just the `default` and `full` groups: a secret in a committed file is a secret
 everyone has.
+
+The `limits` block is off nobody's path but an abuser's: a per-caller request rate, an escalating
+lockout after repeated bad credentials, a cap on body size, and the browser security headers. Behind
+a proxy set `trust_forwarded_for` (or `MCPM_TRUST_PROXY=1`) so a caller is judged by the real address
+the proxy reports — and a request the proxy did not stamp is the local operator, never limited. The
+deploy-time knobs also take env overrides: `MCPM_TRUST_PROXY`, `MCPM_RATE_PER_MINUTE`,
+`MCPM_MAX_BODY_MB`, `MCPM_MAX_CONCURRENCY`.
 
 ## Management API
 

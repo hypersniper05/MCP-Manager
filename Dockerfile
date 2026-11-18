@@ -10,8 +10,14 @@
 FROM python:3.12-slim
 WORKDIR /app
 
-RUN pip install --no-cache-dir --quiet \
-      mcp pyyaml uvicorn httpx2 cryptography onnxruntime tokenizers huggingface-hub
+# Upgrade pip first: the pip that ships in the base image (25.x) is the one package a vuln
+# scan flags here (PYSEC-2026-1795/1796/196/2875/2876/3721), so take its fix before it is used
+# to install anything. The runtime deps carry floors past their own known advisories --
+# h11>=0.16 for the HTTP request-smuggling fix, a current cryptography -- and float above them
+# so a rebuild --pull keeps picking up patches.
+RUN pip install --no-cache-dir --quiet --root-user-action=ignore --upgrade pip \
+ && pip install --no-cache-dir --quiet --root-user-action=ignore \
+      mcp pyyaml uvicorn "h11>=0.16" httpx2 "cryptography>=44" onnxruntime tokenizers huggingface-hub
 
 COPY mcp_manager/ ./mcp_manager/
 COPY portal/ ./portal/

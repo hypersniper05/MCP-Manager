@@ -12,6 +12,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from . import api, config, db
 from .gateway import Gateway
 from .gate import Gate
+from .limits import Guard, Limits
 from starlette.middleware.cors import CORSMiddleware
 
 log = logging.getLogger("mcpm")
@@ -30,6 +31,9 @@ async def main(config_path: str = "config.yaml"):
     if db.seed(database, seed_cfg):
         log.info("first run: seeded from %s — from here on the DB is truth", config_path)
 
+    lim = boot["limits"]
+    guard = Guard(lim)
+
     gw = Gateway(boot, database, boot["admin_token"], str(ROOT / boot["portal_file"]))
     hosts = boot["allowed_hosts"] or []
     app = gw.build().streamable_http_app(
@@ -43,8 +47,10 @@ async def main(config_path: str = "config.yaml"):
     app.state.gateway = gw
     app.state.admin_token = boot["admin_token"]
     app.state.portal_file = gw.portal_file
+    app.state.guard = guard
     app.add_middleware(Gate, db=database, admin_token=boot["admin_token"],
-                       require_key=boot["require_key_for_mcp"])
+                       require_key=boot["require_key_for_mcp"],
+                       guard=guard, trust_forwarded_for=lim["trust_forwarded_for"])
     # Added LAST so it sits in FRONT of the gate -- and that ordering is the whole point. A
     # browser preflight (OPTIONS) carries no Authorization header, and the gate would 401 it
     # before CORS ever got the chance to answer, so a standalone portal on another origin
@@ -56,11 +62,23 @@ async def main(config_path: str = "config.yaml"):
     # TLS is uvicorn's own job: with a cert and a key it terminates HTTPS in this same
     # process, so a network deployment needs no proxy and rule 6 still holds.
     tls = config.tls_kwargs(boot)
+    # The edge sits in front of all of it: a locked-out or too-fast caller, or an oversized
+    # body, is turned away before CORS or the gate, and even that refusal carries the headers.
+    app.add_middleware(Limits, guard=guard, trust_forwarded_for=lim["trust_forwarded_for"],
+                       max_body_bytes=lim["max_body_mb"] * 1024 * 1024,
+                       security_headers=lim["security_headers"], https=bool(tls))
+
     scheme = "https" if tls else "http"
     log.info("MCP on %s://%s:%d/mcp — portal on %s://%s:%d/ — API on /api/v1",
              scheme, boot["host"], boot["port"], scheme, boot["host"], boot["port"])
+    # uvicorn's own ceilings back the Limits layer: a hard cap on in-flight requests (503
+    # past it), a bound on how large a single header event may grow, and a keep-alive timeout
+    # so an idle socket is not held open for free.
     await uvicorn.Server(uvicorn.Config(app, host=boot["host"], port=boot["port"],
-                                       log_level="warning", **tls)).serve()
+                                       log_level="warning",
+                                       limit_concurrency=lim["max_concurrency"] or None,
+                                       h11_max_incomplete_event_size=64 * 1024,
+                                       timeout_keep_alive=5, **tls)).serve()
 
 
 if __name__ == "__main__":

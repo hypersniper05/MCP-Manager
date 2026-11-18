@@ -39,6 +39,21 @@ DEFAULTS = {
     # norm (the README has a one-liner); clients must trust it or accept the warning.
     "tls_cert": None,
     "tls_key": None,
+    # The edge, for a manager that faces more than localhost (limits.py). All in-process, all
+    # off nobody's path but an abuser's. trust_forwarded_for: turn ON only behind a proxy that
+    # sets X-Forwarded-For (Tailscale Serve/Funnel, Caddy) -- then a caller is rate-limited and
+    # locked out by its real address, which that proxy writes and a client cannot forge; left
+    # OFF, the socket peer is used, which is right for a direct bind and coarse behind a proxy.
+    # A genuinely local request (loopback, no proxy header) is the operator and is never limited.
+    "limits": {"trust_forwarded_for": False,
+               "max_body_mb": 16,            # refuse a request body larger than this
+               "rate_per_minute": 240,       # per-caller request ceiling; 0 disables it
+               "max_concurrency": 256,       # uvicorn refuses (503) beyond this many in-flight
+               "max_auth_failures": 8,       # bad token/key tries in the window before a lockout
+               "auth_window_seconds": 300,
+               "ban_seconds": 300,           # first lockout; doubles per repeat
+               "max_ban_seconds": 86400,     # ... capped here
+               "security_headers": True},
     # Embeddings run here, in this process: embeddinggemma-300m, 4-bit (embedder.py). The model
     # files are fetched from `repo` into `dir` on first start and kept (a volume, in the
     # container). Nothing outside the manager is called for them. If the model can't load,
@@ -62,6 +77,18 @@ def _dotenv(root: Path):
             os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 
 
+def _env_int(d: dict, key: str, env: str) -> None:
+    v = os.environ.get(env)
+    if v is not None and v.strip().lstrip("-").isdigit():
+        d[key] = int(v)
+
+
+def _env_bool(d: dict, key: str, env: str) -> None:
+    v = os.environ.get(env)
+    if v is not None:
+        d[key] = v.strip().lower() in ("1", "true", "yes", "on")
+
+
 def load(path: str) -> tuple:
     # .env lives next to the config file it belongs to. No cwd fallback — that let the
     # repo root's live .env leak into a test run and quietly override its test token.
@@ -74,6 +101,13 @@ def load(path: str) -> tuple:
     boot["admin_token"] = os.environ.get("MCPM_ADMIN_TOKEN") or boot.get("admin_token")
     # shallow merge, so a config that sets only `file` still gets threads/max_tokens
     boot["embeddings"] = {**DEFAULTS["embeddings"], **(boot.get("embeddings") or {})}
+    boot["limits"] = {**DEFAULTS["limits"], **(boot.get("limits") or {})}
+    # The deploy-time ones get an env override, like the bind does: a proxy and its caps are a
+    # property of where the manager runs, not of the committed config.
+    _env_bool(boot["limits"], "trust_forwarded_for", "MCPM_TRUST_PROXY")
+    _env_int(boot["limits"], "max_body_mb", "MCPM_MAX_BODY_MB")
+    _env_int(boot["limits"], "rate_per_minute", "MCPM_RATE_PER_MINUTE")
+    _env_int(boot["limits"], "max_concurrency", "MCPM_MAX_CONCURRENCY")
     # The container sets this too: inside Docker only a 0.0.0.0 bind is reachable through
     # the port mapping, while a bare install should stay on localhost (the default).
     if os.environ.get("MCPM_HOST"):
