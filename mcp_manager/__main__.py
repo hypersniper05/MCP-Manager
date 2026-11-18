@@ -12,6 +12,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from . import api, config, db
 from .gateway import Gateway
 from .gate import Gate
+from .limits import Guard, Limits, sdk_hosts
 from starlette.middleware.cors import CORSMiddleware
 
 log = logging.getLogger("mcpm")
@@ -30,6 +31,9 @@ async def main(config_path: str = "config.yaml"):
     if db.seed(database, seed_cfg):
         log.info("first run: seeded from %s — from here on the DB is truth", config_path)
 
+    lim = boot["limits"]
+    guard = Guard(lim)
+
     gw = Gateway(boot, database, boot["admin_token"], str(ROOT / boot["portal_file"]))
     hosts = boot["allowed_hosts"] or []
     app = gw.build().streamable_http_app(
@@ -37,14 +41,20 @@ async def main(config_path: str = "config.yaml"):
         # without this the MCP endpoint is localhost-only: streamable_http_app() defaults to
         # host="127.0.0.1" and installs Host-header protection allowing only localhost, so a
         # client arriving over LAN or Tailscale is refused before our own gate is consulted.
+        # With hosts listed the edge (Limits) checks Host on every path first; the SDK's copy
+        # gets the same list in its own syntax, so the two never disagree.
         transport_security=TransportSecuritySettings(
-            enable_dns_rebinding_protection=bool(hosts), allowed_hosts=list(hosts)))
+            enable_dns_rebinding_protection=bool(hosts),
+            allowed_hosts=sdk_hosts(hosts) if hosts else []))
     app.state.db = database
     app.state.gateway = gw
     app.state.admin_token = boot["admin_token"]
     app.state.portal_file = gw.portal_file
+    app.state.guard = guard
     app.add_middleware(Gate, db=database, admin_token=boot["admin_token"],
-                       require_key=boot["require_key_for_mcp"])
+                       require_key=boot["require_key_for_mcp"],
+                       guard=guard, trust_forwarded_for=lim["trust_forwarded_for"],
+                       allowed_hosts=hosts)
     # Added LAST so it sits in FRONT of the gate -- and that ordering is the whole point. A
     # browser preflight (OPTIONS) carries no Authorization header, and the gate would 401 it
     # before CORS ever got the chance to answer, so a standalone portal on another origin
@@ -56,11 +66,23 @@ async def main(config_path: str = "config.yaml"):
     # TLS is uvicorn's own job: with a cert and a key it terminates HTTPS in this same
     # process, so a network deployment needs no proxy and rule 6 still holds.
     tls = config.tls_kwargs(boot)
+    # The edge sits in front of all of it: a locked-out or too-fast caller, or an oversized
+    # body, is turned away before CORS or the gate, and even that refusal carries the headers.
+    app.add_middleware(Limits, guard=guard, trust_forwarded_for=lim["trust_forwarded_for"],
+                       max_body_bytes=lim["max_body_mb"] * 1024 * 1024,
+                       security_headers=lim["security_headers"], https=bool(tls),
+                       allowed_hosts=hosts)
+
     scheme = "https" if tls else "http"
     log.info("MCP on %s://%s:%d/mcp — portal on %s://%s:%d/ — API on /api/v1",
              scheme, boot["host"], boot["port"], scheme, boot["host"], boot["port"])
+    # uvicorn's own ceiling backs the Limits layer: a hard cap on in-flight requests (503 past
+    # it). Its other guards are already right by default and stay that way -- h11 refuses a
+    # header block over 16 KiB, and an idle keep-alive socket is closed after 5 s.
     await uvicorn.Server(uvicorn.Config(app, host=boot["host"], port=boot["port"],
-                                       log_level="warning", **tls)).serve()
+                                       log_level="warning",
+                                       limit_concurrency=lim["max_concurrency"] or None,
+                                       **tls)).serve()
 
 
 if __name__ == "__main__":

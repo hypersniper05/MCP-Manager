@@ -15,10 +15,14 @@ behaviour changes. This file is the inside view: how it works, why, and how to w
 mcp_manager/
   __main__.py   entry: boot config -> DB (seed on first run) -> MCP app + API + portal, gate, CORS
   config.py     boot config + .env loading; DEFAULTS (host 127.0.0.1 — local-only by default); env overrides
-                MCPM_ADMIN_TOKEN/MCPM_HOST/MCPM_DB/MCPM_MODELS_DIR/MCPM_TLS_CERT/MCPM_TLS_KEY;
+                MCPM_ADMIN_TOKEN/MCPM_HOST/MCPM_DB/MCPM_MODELS_DIR/MCPM_TLS_CERT/MCPM_TLS_KEY,
+                and the edge's MCPM_TRUST_PROXY/MCPM_ALLOWED_HOSTS/MCPM_RATE_PER_MINUTE/MCPM_MAX_BODY_MB/
+                MCPM_MAX_CONCURRENCY (blank = unset: compose passes every variable it lists);
                 tls_kwargs() = uvicorn's ssl options, both files or nothing
   gate.py       the ONLY auth check: /api/* needs the admin token, everything else a registered key.
                 Sets contextvars current_client / current_group / current_key for the handlers.
+                Reports a bad credential to the Guard (limits.py), which enforces the lockout.
+  limits.py     the edge, outermost ASGI: Host allow-list, ban, rate, body cap, security headers
   gateway.py    the core (~1400 lines): upstream links, per-key client sessions, tool views,
                 search, call routing, coaching, outage handling, news
   hints.py      argument checking/fixing and usage text (pure functions)
@@ -178,6 +182,20 @@ description) change what the model reads and what search matches on.
   the last 2000 events per key at startup -- the events log is the only memory. Events carry
   `key_id` (labels can be renamed or shared); old rows were matched by label in `_event_keys`.
 
+**The edge** (`limits.py`, 2026-11-18; in memory, a restart clears it):
+- Who a caller is: with `trust_forwarded_for`, the last hop of every X-Forwarded-For line,
+  believed only when Host is an `allowed_hosts` name (a local relay, such as a web UI's CORS
+  proxy, can add headers but cannot change Host); no such header = the operator, never limited.
+  Never trust it with the port open to the network: a direct caller writes its own.
+- Without a proxy, a peer on this machine or a private network (`_own_network`: loopback, RFC
+  1918, link-local, ULA, 100.64/10) is never limited. In Docker every caller is the bridge
+  gateway, and a count for that one address let one app retrying a stale key lock out every app
+  and the admin's portal (reproduced 2026-11-18 on a throwaway container).
+- A ban is checked before the credential is read: a good key clears the failure count, not a ban
+  in force. 8 failures in 300 s, then 5 min, doubling per repeat, capped at 24 h.
+- `allowed_hosts` is checked on every path (421); loopback names always pass. With it set, the
+  SDK's own /mcp check also refuses any browser `Origin` (403): `allowed_origins` is empty.
+
 ## Search and embeddings
 
 - Embeddings run ONLY inside the manager — no outside service, ever. Model: embeddinggemma-300m (gen 1), 4-bit ONNX
@@ -237,7 +255,7 @@ Migrations in `db._migrate`: the `tools` column, and the old four-mode groups
 
 ## Tests
 
-`python -m pytest -q` from the repo root — 198 tests.
+`python -m pytest -q` from the repo root — 237 tests.
 - Fast, no network: `test_names`, `test_adaptive`, `test_group_servers`, `test_tls`, `test_supervisor`, `test_native`, `test_advice`, `test_conversations`, `test_hints`, `test_reembed`,
   `test_migration`, `test_embedder`, `test_config`. Run these freely.
 - Live: `test_api`, `test_gateway`, `test_search`, `test_coaching`, `test_outage` start their own

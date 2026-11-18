@@ -18,6 +18,7 @@ import contextvars
 import secrets
 
 from . import db
+from .limits import client_addr, _is_local
 
 # The gate resolves identity from the credential and hands it down; handlers read it from
 # here instead of parsing headers themselves. contextvars because the SDK runs handlers on
@@ -29,11 +30,18 @@ current_key = contextvars.ContextVar("mcpm_key", default=None)       # the key's
 
 
 class Gate:
-    def __init__(self, app, db, admin_token: str | None, require_key: bool = True):
+    def __init__(self, app, db, admin_token: str | None, require_key: bool = True,
+                 guard=None, trust_forwarded_for: bool = False, allowed_hosts=None):
         self.app = app
         self.db = db
         self.admin_token = admin_token
         self.require_key = require_key
+        # The lockout is reported here, where a credential is judged, and enforced in the
+        # Limits layer in front, where a banned caller never reaches this code. None in a
+        # unit test that builds the gate alone.
+        self.guard = guard
+        self.trust = trust_forwarded_for
+        self.allowed_hosts = allowed_hosts or []
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
@@ -48,24 +56,44 @@ class Gate:
             # otherwise means inventing a session layer for one page.
             if not self.admin_token:
                 return await _deny(send, 503, "management API disabled: no admin token configured")
-            if not secrets.compare_digest(header.removeprefix("Bearer ").strip(), self.admin_token):
+            # bytes, not str: compare_digest refuses a str with non-ASCII in it, and a caller
+            # picks what this header holds -- that was an unhandled 500 per request
+            if not secrets.compare_digest(header.removeprefix("Bearer ").strip().encode(),
+                                          self.admin_token.encode()):
+                self._fail(scope)
                 return await _deny(send, 401, "admin token required")
+            self._ok(scope)
         elif path.startswith("/mcp") and self.require_key:
             row = db.group_for_key(self.db, header.removeprefix("Bearer ").strip())
             if not row:
+                self._fail(scope)
                 return await _deny(send, 401, "a registered key is required")
             current_client.set(row["label"])
             current_group.set(row["name"])
             current_key.set(row["key_id"])
             db.touch_key(self.db, row["key_id"])   # the settings page's "last used"
+            self._ok(scope)
 
         return await self.app(scope, receive, send)
 
+    def _fail(self, scope):
+        # the local operator is never locked out, so its typos are not counted against the
+        # address it shares with every other local caller (in Docker, the bridge gateway)
+        if self.guard is not None and not _is_local(scope, self.trust):
+            self.guard.fail(client_addr(scope, self.trust, self.allowed_hosts))
+
+    def _ok(self, scope):
+        if self.guard is not None:
+            self.guard.ok(client_addr(scope, self.trust, self.allowed_hosts))
+
 
 def _header(scope, name):
+    # latin-1, HTTP's own charset for header bytes: it decodes anything. A strict UTF-8 decode
+    # let any caller turn a bad byte in Authorization into a 500 and a traceback in the log --
+    # past the lockout, since the request died before its failure was counted.
     for k, v in scope.get("headers", []):
-        if k.decode().lower() == name:
-            return v.decode()
+        if k.decode("latin-1").lower() == name:
+            return v.decode("latin-1")
     return ""
 
 

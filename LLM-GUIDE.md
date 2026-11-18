@@ -131,6 +131,9 @@ With HTTPS on, plain `http://` stops answering, and every address becomes `https
 | `MCPM_PUBLISH` | Docker only: the host address the port is published on. Default `127.0.0.1` — this computer only. `0.0.0.0` opens it to the network. |
 | `MCPM_PORT` | Docker only: the port on the host. Default `8899`. |
 | `MCPM_TLS_CERT`, `MCPM_TLS_KEY` | Certificate and key: both set → the manager serves HTTPS itself (uvicorn, same process, no proxy). Half a pair, or a missing file → the start fails and names what is missing. Neither → plain HTTP. |
+| `MCPM_TRUST_PROXY` | `1` behind a proxy (Tailscale, Caddy): a caller is judged by the last `X-Forwarded-For` hop, believed only on a request addressed to an `allowed_hosts` name when that list is set. A request with no such header is the operator, never limited. Never with the port open to the network. |
+| `MCPM_ALLOWED_HOSTS` | Comma-separated Host names (`name`, `name:port`, `name:*`). Set → any other Host gets `421` on every path, and `/mcp` refuses a browser `Origin` (`403`). Loopback names always pass. |
+| `MCPM_RATE_PER_MINUTE`, `MCPM_MAX_BODY_MB`, `MCPM_MAX_CONCURRENCY` | The edge limits: requests per caller per minute (240, `0` = off), the largest body (16 MB), requests in flight (256). Without a proxy, callers on this machine or a private network are never rate-limited or locked out. |
 | `HF_TOKEN` | Only if your network needs a token to download from Hugging Face. |
 
 ### `config.yaml`
@@ -146,7 +149,8 @@ boot:
   db: mcp_manager.db
   default_group: default   # group used for keys created without one (and for keyless access)
   require_key_for_mcp: true   # false = /mcp accepts anyone, with the default group's view
-  allowed_hosts: null      # set e.g. ["myhost:*"] to turn on DNS-rebinding protection
+  allowed_hosts: null      # e.g. ["myhost:*"]: any other Host is refused (421) on every path
+                           # (DNS-rebinding protection); loopback names always pass
   tls_cert: null           # with tls_key: serve HTTPS directly (python -m mcp_manager.tls makes a pair)
   tls_key: null            # both files or neither — half a pair stops the start
   portal_file: portal/index.html
@@ -709,6 +713,12 @@ prompts are not routed · no per-user identity inside one app · the installer i
 | `/api/...` → 401 | Wrong token, or an app key used instead of the admin token. |
 | `/api/...` → 503 | `MCPM_ADMIN_TOKEN` is not set on the manager. |
 | `/mcp` → 401 | Key unknown, revoked or deleted. Re-issue it (new secret, same key) or create one. |
+| `429` `locked out: too many failed attempts` | 8 bad keys or admin tokens from one address in 5 minutes. The ban runs out by itself (`Retry-After`: 5 minutes, doubling for a repeat, at most 24 hours); a restart clears it. Fix the client's key first. |
+| `429` `rate limit exceeded` | Over 240 requests in a minute from one address. Wait `Retry-After` seconds, or raise `MCPM_RATE_PER_MINUTE`. |
+| `421` `misdirected request: unknown host` | `allowed_hosts` is set and the request named another host. Use a listed name, or add it. |
+| `/mcp` → 403 `Invalid Origin header` | `allowed_hosts` is set and a browser sent `Origin`. Connect from a server-side or desktop client. |
+| `413` `request body too large` | The body is over `max_body_mb` (16 MB). |
+| `503` with no JSON body | More than `max_concurrency` (256) requests in flight. |
 | Client fails the TLS handshake / `wrong version number` | The manager is plain HTTP there: TLS is on only when both cert and key are set. The startup log says `MCP on https://…` or `http://…`. |
 | `CERTIFICATE_VERIFY_FAILED` / "cert invalid" against your HTTPS manager | The client must trust the root: run the installer's `--trust <file>` on that device, or pass the file as `SSL_CERT_FILE` / `--cacert` / `NODE_EXTRA_CA_CERTS`. The connected name must also be one the certificate lists: run the installer again with `--name`, or after an address changes. Easier: put Tailscale Serve or a Caddy/Let's Encrypt proxy in front and the client sees a real certificate. |
 | Connection refused from another device | The manager answers on this computer only by default. Run the installer with `--network`, or set `MCPM_PUBLISH=0.0.0.0` (Docker) or `MCPM_HOST` (bare install). |
